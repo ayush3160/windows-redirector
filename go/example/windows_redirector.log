@@ -1,0 +1,31 @@
+1763474992.764 [INFO] - FFI start_redirector_with_dll_path called
+1763474992.765 [INFO] - RUNNING flag set, initializing logger
+1763474992.765 [INFO] - Using custom WinDivert.dll path: C:\Users\keploy\ayush_work\keploy\pkg\agent\hooks\windows\assets\WinDivert.dll
+1763474992.766 [INFO] - Starting Windows redirector changing...
+1763474992.766 [INFO] - Configuration - client_pid: 1234, agent_pid: 5678, proxy_port: 8080, incoming_proxy: 3000
+1763474992.767 [INFO] - Configuration stored, spawning redirector thread
+1763474992.767 [INFO] - 1763474992Redirector thread spawned successfully, returning success
+.767 [INFO] - Redirector thread started
+1763474992.768 [INFO] - Checking administrator privileges...
+1763474992.769 [INFO] - Tokio runtime created, calling run_redirector
+1763474992.770 [INFO] - Inside run_redirector main function
+1763474992.770 [INFO] - Creating dynamic WinDivert loader...
+1763474992.771 [INFO] - Creating WinDivert socket handle...
+1763474992.772 [INFO] - Spawned socket events thread
+1763474992.772 [INFO] - Spawned network events thread
+1763474992.772 [INFO] - Creating WinDivert inject handle...
+1763474992.774 [INFO] - Created inject handle successfully
+1763474992.774 [INFO] - Initialized packet map and entering main loop
+1763474992.777 [INFO] - Network events relay thread started
+1763474992.778 [INFO] - WinDivert Network Error: WinDivertRecvEx failed
+1763474992.783 [INFO] - Socket events relay thread started
+1763474992.783 [INFO] - WinDivert Socket Error: WinDivertRecvEx failed
+1763474993.269 [INFO] - FFI start_redirector_with_dll_path called
+1763474993.270 [INFO] - RUNNING flag set, initializing logger
+1763474993.270 [INFO] - Using custom WinDivert.dll path: C:\path\to\WinDivert.dll
+1763474993.271 [INFO] - logger already initialized, falling back to direct writes
+1763474993.271 [INFO] - Starting Windows redirector (fallback logger)
+1763474993.271 [INFO] - Configuration - client_pid: 1234, agent_pid: 5678, proxy_port: 8080, incoming_proxy: 3000
+1763474993.271 [INFO] - Configuration stored, spawning redirector thread
+1763474993.272 [INFO] - Redirector thread spawned successfully, returning success
+1763474993.272 [INFO] - Redirector thread started
