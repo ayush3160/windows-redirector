@@ -5,22 +5,19 @@ authors = ["example <example@example.com>"]
 edition = "2021"
 rust-version = "1.70"
 license = "LGPL-3.0-or-later"
-description = "Transparently redirect traffic to a mitmproxy instance (standalone)"
+description = "Windows network traffic redirector FFI library"
 publish = false
 
+# Remove the [[bin]] section since we only want a library
 [lib]
 name = "windows_redirector"
 crate-type = ["cdylib", "staticlib"]
 
-[[bin]]
-name = "windows-redirector"
-path = "src/main.rs"
-
 # Target-specific dependencies for Windows
 [target.'cfg(windows)'.dependencies]
-tokio = { version = "1.40", features = ["macros", "net", "rt-multi-thread", "sync", "io-util"] }
+tokio = { version = "1.40", features = ["macros", "net", "rt-multi-thread", "sync", "io-util", "time"] }
 anyhow = { version = "1.0.89", features = ["backtrace"] }
-windivert = { version = "0.6.0", features = ["vendored"] }
+libloading = "0.8"
 lru_time_cache = "0.11.11"
 log = "0.4.22"
 env_logger = "0.11.5"
@@ -37,5 +34,5 @@ hex = "0.4.3"
 winres = "0.1.12"
 
 [package.metadata.winres]
-ProductName = "Mitmproxy Redirector"
-FileDescription = "Transparently redirect traffic to a mitmproxy instance"
+ProductName = "Windows Redirector FFI Library"
+FileDescription = "FFI library for network traffic redirection"

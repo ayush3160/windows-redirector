@@ -17,7 +17,7 @@ func main() {
 		return
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(5 * time.Second)
 
 	// Example: check destination for a port (will return empty since map is empty initially)
 	dest, ok := redirector.GetDestination(8080)
@@ -35,11 +35,11 @@ func main() {
 	}
 
 	// Test with custom DLL path
-	fmt.Println("\nTesting with custom DLL path...")
-	if err := redirector.StartRedirectorWithDllPath(1234, 5678, 8080, 3000, "C:\\path\\to\\WinDivert.dll"); err != nil {
-		fmt.Println("StartRedirectorWithDllPath error (expected - custom path doesn't exist):", err)
-	} else {
-		fmt.Println("StartRedirectorWithDllPath succeeded with custom path")
-		redirector.StopRedirector()
-	}
+	// fmt.Println("\nTesting with custom DLL path...")
+	// if err := redirector.StartRedirectorWithDllPath(1234, 5678, 8080, 3000, "C:\\path\\to\\WinDivert.dll"); err != nil {
+	// 	fmt.Println("StartRedirectorWithDllPath error (expected - custom path doesn't exist):", err)
+	// } else {
+	// 	fmt.Println("StartRedirectorWithDllPath succeeded with custom path")
+	// 	redirector.StopRedirector()
+	// }
 }

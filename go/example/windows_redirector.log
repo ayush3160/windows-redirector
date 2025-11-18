@@ -1,31 +1,205 @@
-1763474992.764 [INFO] - FFI start_redirector_with_dll_path called
-1763474992.765 [INFO] - RUNNING flag set, initializing logger
-1763474992.765 [INFO] - Using custom WinDivert.dll path: C:\Users\keploy\ayush_work\keploy\pkg\agent\hooks\windows\assets\WinDivert.dll
-1763474992.766 [INFO] - Starting Windows redirector changing...
-1763474992.766 [INFO] - Configuration - client_pid: 1234, agent_pid: 5678, proxy_port: 8080, incoming_proxy: 3000
-1763474992.767 [INFO] - Configuration stored, spawning redirector thread
-1763474992.767 [INFO] - 1763474992Redirector thread spawned successfully, returning success
-.767 [INFO] - Redirector thread started
-1763474992.768 [INFO] - Checking administrator privileges...
-1763474992.769 [INFO] - Tokio runtime created, calling run_redirector
-1763474992.770 [INFO] - Inside run_redirector main function
-1763474992.770 [INFO] - Creating dynamic WinDivert loader...
-1763474992.771 [INFO] - Creating WinDivert socket handle...
-1763474992.772 [INFO] - Spawned socket events thread
-1763474992.772 [INFO] - Spawned network events thread
-1763474992.772 [INFO] - Creating WinDivert inject handle...
-1763474992.774 [INFO] - Created inject handle successfully
-1763474992.774 [INFO] - Initialized packet map and entering main loop
-1763474992.777 [INFO] - Network events relay thread started
-1763474992.778 [INFO] - WinDivert Network Error: WinDivertRecvEx failed
-1763474992.783 [INFO] - Socket events relay thread started
-1763474992.783 [INFO] - WinDivert Socket Error: WinDivertRecvEx failed
-1763474993.269 [INFO] - FFI start_redirector_with_dll_path called
-1763474993.270 [INFO] - RUNNING flag set, initializing logger
-1763474993.270 [INFO] - Using custom WinDivert.dll path: C:\path\to\WinDivert.dll
-1763474993.271 [INFO] - logger already initialized, falling back to direct writes
-1763474993.271 [INFO] - Starting Windows redirector (fallback logger)
-1763474993.271 [INFO] - Configuration - client_pid: 1234, agent_pid: 5678, proxy_port: 8080, incoming_proxy: 3000
-1763474993.271 [INFO] - Configuration stored, spawning redirector thread
-1763474993.272 [INFO] - Redirector thread spawned successfully, returning success
-1763474993.272 [INFO] - Redirector thread started
+1763486536.263 [INFO] - FFI start_redirector_with_dll_path called
+1763486536.264 [INFO] - RUNNING flag set, initializing logger
+1763486536.264 [INFO] - Using custom WinDivert.dll path: C:\Users\keploy\ayush_work\keploy\pkg\agent\hooks\windows\assets\WinDivert.dll
+1763486536.265 [INFO] - Starting Windows redirector changing...
+1763486536.265 [INFO] - Configuration - client_pid: 1234, agent_pid: 5678, proxy_port: 8080, incoming_proxy: 3000
+1763486536.266 [INFO] - Configuration stored, spawning redirector thread
+1763486536.2671763486536. [INFO] - 267Redirector thread spawned successfully, returning success
+ [INFO] - Redirector thread started
+1763486536.268 [INFO] - Checking administrator privileges...
+1763486536.269 [INFO] - Tokio runtime created, calling run_redirector
+1763486536.270 [INFO] - Inside run_redirector main function
+1763486536.270 [INFO] - Creating dynamic WinDivert loader...
+1763486536.271 [INFO] - Creating WinDivert socket handle...
+1763486536.272 [INFO] - Spawned socket events thread
+1763486536.272 [INFO] - Spawned network events thread
+1763486536.272 [INFO] - Creating WinDivert inject handle...
+1763486536.278 [INFO] - Network events relay thread started
+1763486536.278 [INFO] - Created inject handle successfully
+1763486536.279 [INFO] - Initialized packet map and entering main loop
+1763486536.282 [INFO] - Socket events relay thread started
+1763486536.343 [INFO] - Received event in main loop
+1763486536.344 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 ACK
+1763486536.344 [INFO] - New connection: TCP 192.168.116.106:3389 -> 10.1.8.7:63586
+1763486536.344 [INFO] - Adding connection: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 with action: None
+1763486536.344 [INFO] - No action needed for connection
+1763486536.345 [INFO] - Received event in main loop
+1763486536.345 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486536.345 [INFO] - Received event in main loop
+1763486536.346 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 ACK
+1763486536.346 [INFO] - Received event in main loop
+1763486536.347 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486536.347 [INFO] - Received event in main loop
+1763486536.347 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486536.355 [INFO] - Received event in main loop
+1763486536.355 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.356 [INFO] - Received event in main loop
+1763486536.356 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.356 [INFO] - Received event in main loop
+1763486536.357 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.357 [INFO] - Received event in main loop
+1763486536.357 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 PSH/ACK
+1763486536.406 [INFO] - Received event in main loop
+1763486536.407 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 ACK
+1763486536.407 [INFO] - Received event in main loop
+1763486536.407 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486536.408 [INFO] - Received event in main loop
+1763486536.408 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486536.416 [INFO] - Received event in main loop
+1763486536.416 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.417 [INFO] - Received event in main loop
+1763486536.417 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.418 [INFO] - Received event in main loop
+1763486536.419 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.419 [INFO] - Received event in main loop
+1763486536.420 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 PSH/ACK
+1763486536.474 [INFO] - Received event in main loop
+1763486536.474 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 ACK
+1763486536.562 [INFO] - Received event in main loop
+1763486536.562 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486536.571 [INFO] - Received event in main loop
+1763486536.571 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486536.572 [INFO] - Received event in main loop
+1763486536.572 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 PSH/ACK
+1763486536.625 [INFO] - Received event in main loop
+1763486536.625 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 ACK
+1763486537.568 [INFO] - Received event in main loop
+1763486537.568 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486537.577 [INFO] - Received event in main loop
+1763486537.578 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486538.37 [INFO] - Received event in main loop
+1763486538.37 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 SYN
+1763486538.38 [INFO] - New connection: TCP 192.168.116.106:50921 -> 140.82.113.21:443
+1763486538.38 [INFO] - Adding connection: TCP 192.168.116.106:50921 -> 140.82.113.21:443 with action: None
+1763486538.38 [INFO] - No action needed for connection
+1763486538.305 [INFO] - Received event in main loop
+1763486538.305 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 SYN/ACK
+1763486538.306 [INFO] - Received event in main loop
+1763486538.306 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 ACK
+1763486538.306 [INFO] - Received event in main loop
+1763486538.307 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 PSH/ACK
+1763486538.453 [INFO] - Received event in main loop
+1763486538.454 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 PSH/ACK
+1763486538.454 [INFO] - New connection: TCP 192.168.116.106:64094 -> 20.42.65.89:443
+1763486538.454 [INFO] - Adding connection: TCP 192.168.116.106:64094 -> 20.42.65.89:443 with action: None
+1763486538.455 [INFO] - No action needed for connection
+1763486538.455 [INFO] - Received event in main loop
+1763486538.455 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.456 [INFO] - Received event in main loop
+1763486538.456 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.456 [INFO] - Received event in main loop
+1763486538.456 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.457 [INFO] - Received event in main loop
+1763486538.457 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.457 [INFO] - Received event in main loop
+1763486538.458 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.458 [INFO] - Received event in main loop
+1763486538.458 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.458 [INFO] - Received event in main loop
+1763486538.459 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486538.459 [INFO] - Received event in main loop
+1763486538.459 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 PSH/ACK
+1763486538.580 [INFO] - Received event in main loop
+1763486538.580 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486538.580 [INFO] - Received event in main loop
+1763486538.581 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 ACK
+1763486538.581 [INFO] - Received event in main loop
+1763486538.582 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486538.582 [INFO] - Received event in main loop
+1763486538.582 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486538.583 [INFO] - Received event in main loop
+1763486538.583 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 ACK
+1763486538.585 [INFO] - Received event in main loop
+1763486538.585 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 ACK
+1763486538.585 [INFO] - Received event in main loop
+1763486538.585 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486538.586 [INFO] - Received event in main loop
+1763486538.586 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 ACK
+1763486538.586 [INFO] - Received event in main loop
+1763486538.587 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 ACK
+1763486538.587 [INFO] - Received event in main loop
+1763486538.587 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 PSH/ACK
+1763486538.590 [INFO] - Received event in main loop
+1763486538.590 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486538.675 [INFO] - Received event in main loop
+1763486538.675 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486538.676 [INFO] - Received event in main loop
+1763486538.676 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486538.677 [INFO] - Received event in main loop
+1763486538.677 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486538.678 [INFO] - Received event in main loop
+1763486538.678 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486538.680 [INFO] - Received event in main loop
+1763486538.681 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 PSH/ACK
+1763486538.682 [INFO] - Received event in main loop
+1763486538.682 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 PSH/ACK
+1763486538.852 [INFO] - Received event in main loop
+1763486538.853 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 ACK
+1763486538.853 [INFO] - Received event in main loop
+1763486538.854 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486538.854 [INFO] - Received event in main loop
+1763486538.854 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486538.855 [INFO] - Received event in main loop
+1763486538.855 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 ACK
+1763486538.957 [INFO] - Received event in main loop
+1763486538.957 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486539.128 [INFO] - Received event in main loop
+1763486539.128 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486539.128 [INFO] - Received event in main loop
+1763486539.129 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 PSH/ACK
+1763486539.130 [INFO] - Received event in main loop
+1763486539.130 [INFO] - Processing network packet: TCP 140.82.113.21:443 -> 192.168.116.106:50921 FIN/ACK
+1763486539.130 [INFO] - Received event in main loop
+1763486539.131 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 PSH/ACK
+1763486539.131 [INFO] - Received event in main loop
+1763486539.131 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 FIN/ACK
+1763486539.132 [INFO] - Received event in main loop
+1763486539.132 [INFO] - Processing network packet: TCP 192.168.116.106:50921 -> 140.82.113.21:443 RST/ACK
+1763486539.595 [INFO] - Received event in main loop
+1763486539.596 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 PSH/ACK
+1763486539.605 [INFO] - Received event in main loop
+1763486539.606 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 ACK
+1763486540.32 [INFO] - Received event in main loop
+1763486540.32 [INFO] - Processing network packet: TCP 10.1.8.7:63586 -> 192.168.116.106:3389 PSH/ACK
+1763486540.78 [INFO] - Received event in main loop
+1763486540.78 [INFO] - Processing network packet: TCP 192.168.116.106:3389 -> 10.1.8.7:63586 ACK
+1763486540.494 [INFO] - Received event in main loop
+1763486540.495 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 PSH/ACK
+1763486540.495 [INFO] - Received event in main loop
+1763486540.495 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.496 [INFO] - Received event in main loop
+1763486540.496 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.496 [INFO] - Received event in main loop
+1763486540.497 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.497 [INFO] - Received event in main loop
+1763486540.497 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.498 [INFO] - Received event in main loop
+1763486540.498 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.499 [INFO] - Received event in main loop
+1763486540.499 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.499 [INFO] - Received event in main loop
+1763486540.500 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.500 [INFO] - Received event in main loop
+1763486540.500 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.501 [INFO] - Received event in main loop
+1763486540.501 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.502 [INFO] - Received event in main loop
+1763486540.502 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
+1763486540.502 [INFO] - Received event in main loop
+1763486540.503 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 PSH/ACK
+1763486540.715 [INFO] - Received event in main loop
+1763486540.715 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486540.716 [INFO] - Received event in main loop
+1763486540.716 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486540.718 [INFO] - Received event in main loop
+1763486540.718 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486540.719 [INFO] - Received event in main loop
+1763486540.719 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486540.720 [INFO] - Received event in main loop
+1763486540.721 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486540.726 [INFO] - Received event in main loop
+1763486540.726 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 ACK
+1763486540.727 [INFO] - Received event in main loop
+1763486540.727 [INFO] - Processing network packet: TCP 20.42.65.89:443 -> 192.168.116.106:64094 PSH/ACK
+1763486540.770 [INFO] - Received event in main loop
+1763486540.770 [INFO] - Processing network packet: TCP 192.168.116.106:64094 -> 20.42.65.89:443 ACK
