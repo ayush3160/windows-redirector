@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 use std::sync::Mutex;
-use smoltcp::wire::{Ipv4Packet, Ipv6Packet, TcpPacket, IpProtocol};
+// Removed unused imports - keeping this line for potential future use
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +13,40 @@ use anyhow::{Context, Result};
 use internet_packet::{ConnectionId, InternetPacket, TransportProtocol};
 use log::{Record, Metadata, LevelFilter};
 use lru_time_cache::LruCache;
+
+// Windows API types
+#[cfg(windows)]
+use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, HANDLE};
+#[cfg(windows)]
+use winapi::um::processthreadsapi::{OpenProcess};
+#[cfg(windows)]
+use winapi::um::handleapi::CloseHandle;
+#[cfg(windows)]
+use winapi::shared::minwindef::DWORD;
+
+// Manual definitions for NTDLL functions and structures
+#[cfg(windows)]
+#[repr(C)]
+#[allow(non_snake_case)]
+struct PROCESS_BASIC_INFORMATION {
+    ExitStatus: winapi::shared::ntdef::NTSTATUS,
+    PebBaseAddress: *mut winapi::ctypes::c_void,
+    AffinityMask: usize,
+    BasePriority: i32,
+    UniqueProcessId: usize,
+    InheritedFromUniqueProcessId: usize,
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn NtQueryInformationProcess(
+        ProcessHandle: HANDLE,
+        ProcessInformationClass: u32,
+        ProcessInformation: *mut winapi::ctypes::c_void,
+        ProcessInformationLength: u32,
+        ReturnLength: *mut u32,
+    ) -> winapi::shared::ntdef::NTSTATUS;
+}
 
 // FFI and dynamic WinDivert modules
 pub mod ffi;
@@ -26,6 +60,57 @@ use once_cell::sync::Lazy;
 
 // Import our dynamic WinDivert types
 use dyn_windivert::{DynWinDivert, DynWinDivertHandle, WinDivertAddress, WinDivertEvent, WinDivertPacket, WINDIVERT_FLAG_SNIFF, WINDIVERT_FLAG_RECV_ONLY, WINDIVERT_FLAG_SEND_ONLY};
+
+// Type definitions for intercept configuration
+#[cfg(windows)]
+pub type PID = DWORD;
+#[cfg(not(windows))]
+pub type PID = u32;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Pattern {
+    Pid(PID),
+    Process(String),
+}
+
+impl Pattern {
+    pub fn matches(&self, process_info: &ProcessInfo) -> bool {
+        match self {
+            Pattern::Pid(pid) => process_info.pid == *pid,
+            Pattern::Process(name) => {
+                if let Some(ref process_name) = process_info.process_name {
+                    process_name.to_lowercase().contains(&name.to_lowercase())
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pattern::Pid(pid) => write!(f, "PID {}", pid),
+            Pattern::Process(name) => write!(f, "Process \"{}\"", name),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Action {
+    Include(Pattern),
+    Exclude(Pattern),
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Include(pattern) => write!(f, "Include {}", pattern),
+            Action::Exclude(pattern) => write!(f, "Exclude {}", pattern),
+        }
+    }
+}
 
 // Local type definitions
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,24 +128,163 @@ pub struct IncomingTrafficInfo {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct LocalInterceptConf {
-    pub intercept_pids: Vec<u32>,
-    pub description: String,
+    pub default: bool,
+    pub actions: Vec<Action>,
+    pub client_pid: Option<PID>,
+    pub agent_pid: Option<PID>,
 }
 
 impl LocalInterceptConf {
-    pub fn disabled() -> Self {
-        Self {
-            intercept_pids: Vec::new(),
-            description: "Disabled".to_string(),
+    pub fn new(actions: Vec<Action>) -> Self {
+        let default = matches!(actions.first(), Some(Action::Exclude(_)));
+        Self { 
+            default, 
+            actions,
+            client_pid: None,
+            agent_pid: None,
         }
     }
-    
-    pub fn should_intercept(&self, proc_info: &ProcessInfo) -> bool {
-        self.intercept_pids.contains(&proc_info.pid)
+
+    pub fn new_with_pids(actions: Vec<Action>, client_pid: Option<PID>, agent_pid: Option<PID>) -> Self {
+        let default = matches!(actions.first(), Some(Action::Exclude(_)));
+        Self { 
+            default, 
+            actions,
+            client_pid,
+            agent_pid,
+        }
     }
-    
-    pub fn description(&self) -> &str {
-        &self.description
+
+    pub fn disabled() -> Self {
+        Self::new(vec![])
+    }
+
+    pub fn set_agent_pid(&mut self, agent_pid: PID) {
+        self.agent_pid = Some(agent_pid);
+    }
+
+    pub fn set_client_pid(&mut self, client_pid: PID) {
+        self.client_pid = Some(client_pid);
+    }
+
+    pub fn agent_pid(&self) -> Option<PID> {
+        self.agent_pid
+    }
+
+    pub fn client_pid(&self) -> Option<PID> {
+        self.client_pid
+    }
+
+    /// Check if the given PID is the agent PID
+    pub fn is_agent_pid(&self, pid: PID) -> bool {
+        self.agent_pid.map(|agent| agent == pid).unwrap_or(false)
+    }
+
+    pub fn actions(&self) -> Vec<String> {
+        self.actions.iter().map(|a| a.to_string()).collect()
+    }
+
+    pub fn default(&self) -> bool {
+        self.default
+    }
+
+    pub fn should_intercept(&self, process_info: &ProcessInfo) -> bool {
+        
+        let _ = write_direct_log(&format!("Checking if should intercept process: {:?}", process_info));
+
+        let mut intercept = false;
+        for action in &self.actions {
+            match action {
+                Action::Include(pattern) => {
+                    // if pattern.matches(process_info) || self.matches_parent(pattern, process_info.pid) {
+                    if self.matches_parent(pattern, process_info.pid) {
+                        intercept = true; // Intercept if it matches or if a parent matches
+                    }
+                }
+                Action::Exclude(pattern) => {
+                    intercept = intercept && !pattern.matches(process_info);
+                }
+            }
+        }
+        intercept
+    }
+
+    // Function to check if any parent of the given PID matches the pattern
+    fn matches_parent(&self, pattern: &Pattern, pid: PID) -> bool {
+        let mut current_pid = pid;
+        let mut counter = 0;
+
+        while let Some(parent) = self.get_parent_pid(current_pid) {
+            if pattern.matches(&ProcessInfo {
+                pid: parent,
+                process_name: None, // Or retrieve the actual process name if needed
+            }) {
+                return true; // A matching parent was found
+            }
+            current_pid = parent; // Move up the process tree
+            counter += 1; // Increment the counter
+
+            if counter >= 10 {
+                break; // Exit the loop if we've reached 10 iterations
+            }
+        }
+        false // No matching parent found
+    }
+
+    // Function to get the parent PID of a given PID
+    pub fn get_parent_pid(&self, pid: PID) -> Option<PID> {
+        #[cfg(windows)]
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None; // Failed to open process
+            }
+
+            let mut process_basic_info: PROCESS_BASIC_INFORMATION = std::mem::zeroed();
+            let mut return_length: DWORD = 0;
+
+            // Query the process information
+            let status = NtQueryInformationProcess(
+                handle,
+                0, // ProcessBasicInformation
+                &mut process_basic_info as *mut _ as *mut winapi::ctypes::c_void, // Use winapi's c_void
+                std::mem::size_of::<PROCESS_BASIC_INFORMATION>() as DWORD,
+                &mut return_length,
+            );
+
+            CloseHandle(handle);
+
+            // Check for successful status
+            if status == 0 { // This needs to check against STATUS_SUCCESS
+                return Some(process_basic_info.InheritedFromUniqueProcessId as DWORD);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = pid; // Suppress unused variable warning
+        }
+        None // Could not retrieve parent PID
+    }
+
+    pub fn description(&self) -> String {
+        if self.actions.is_empty() {
+            return "Intercept nothing.".to_string();
+        }
+        let parts: Vec<String> = self
+            .actions
+            .iter()
+            .map(|a| match a {
+                Action::Include(Pattern::Pid(pid)) => format!("Include PID {}, Agent PID {}.", pid , self.agent_pid.unwrap_or(0)),
+                Action::Include(Pattern::Process(name)) => {
+                    format!("Include processes matching \"{}\".", name)
+                }
+                Action::Exclude(Pattern::Pid(pid)) => format!("Exclude PID {}.", pid),
+                Action::Exclude(Pattern::Process(name)) => {
+                    format!("Exclude processes matching \"{}\".", name)
+                }
+            })
+            .collect();
+        parts.join(" ")
     }
 }
 
@@ -118,6 +342,9 @@ pub static INCOMING_PROXY: AtomicU32 = AtomicU32::new(0);
 
 // Redirect map: src_port -> destination info (host, port, version)
 pub static REDIRECT_MAP: Lazy<Mutex<HashMap<u16, DestInfo>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Agent ephemeral ports tracking
+pub static AGENT_EPHEMERAL_PORTS: Lazy<Mutex<HashSet<u16>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 pub fn init_file_logger() -> Result<(), ()> {
     let path = "windows_redirector.log";
@@ -226,9 +453,30 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
         
     let _ = write_direct_log("Created inject handle successfully");
 
-    let state: LocalInterceptConf = LocalInterceptConf::disabled();
-    initialize_packet_map();
-    let _ = write_direct_log("Initialized packet map and entering main loop");
+    let client_pid_value = CLIENT_PID.load(Ordering::SeqCst);
+    let agent_pid_value = AGENT_PID.load(Ordering::SeqCst);
+    
+    let client_pid = if client_pid_value != 0 { Some(client_pid_value) } else { None };
+    let agent_pid = if agent_pid_value != 0 { Some(agent_pid_value) } else { None };
+    
+    let state: LocalInterceptConf = if client_pid.is_some() || agent_pid.is_some() {
+        // Create configuration with include action for client/agent PIDs
+        let mut actions = Vec::new();
+        if let Some(pid) = client_pid {
+            actions.push(Action::Include(Pattern::Pid(pid)));
+        }
+        if let Some(pid) = agent_pid {
+            actions.push(Action::Include(Pattern::Pid(pid)));
+        }
+        LocalInterceptConf::new_with_pids(actions, client_pid, agent_pid)
+    } else {
+        LocalInterceptConf::disabled()
+    };
+    
+    let _ = write_direct_log(&format!("Initialized LocalInterceptConf with client_pid: {:?}, agent_pid: {:?}", client_pid, agent_pid));
+    let _ = write_direct_log("Entering main loop 2");
+
+    let _ = write_direct_log(&format!("Agent PID: {}", state.agent_pid.unwrap()));
 
     let mut connections = LruCache::<ConnectionId, ConnectionState>::with_expiry_duration(
         Duration::from_secs(60 * 10),
@@ -243,7 +491,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
         }
         
         let result = event_rx.recv().await.unwrap();
-        let _ = write_direct_log("Received event in main loop");
+        // let _ = write_direct_log("Received event in main loop");
         
         match result {
             Event::NetworkPacket(address, data) => {
@@ -255,7 +503,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                     }
                 };
 
-                let _ = write_direct_log(&format!("Processing network packet: {} {}", packet.connection_id(), packet.tcp_flag_str()));
+                // let _ = write_direct_log(&format!("Processing network packet: {} {}", packet.connection_id(), packet.tcp_flag_str()));
                 
                 match connections.get_mut(&packet.connection_id()) {
                     Some(conn_state) => match conn_state {
@@ -382,11 +630,33 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                             }
                         }
                     }
+                    WinDivertEvent::SocketBind => {
+                        let pid = address.process_id();
+                        let port = address.local_port();
+                        
+                        // Check if this PID matches the agent PID
+                        if state.is_agent_pid(pid) {
+                            let mut agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
+                            agent_ports.insert(port);
+                            let _ = write_direct_log(&format!("Agent PID {} bound to port {}, added to ephemeral ports", pid, port));
+                        }
+                    }
                     WinDivertEvent::SocketClose => {
                         if let Some(ConnectionState::Unknown(packets)) =
                             connections.get_mut(&connection_id)
                         {
                             packets.clear();
+                        }
+                        
+                        // Check if this is an agent port that should be removed
+                        let pid = address.process_id();
+                        let port = address.local_port();
+                        
+                        if state.is_agent_pid(pid) {
+                            let mut agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
+                            if agent_ports.remove(&port) {
+                                let _ = write_direct_log(&format!("Agent PID {} closed port {}, removed from ephemeral ports", pid, port));
+                            }
                         }
                     }
                     _ => {}
@@ -419,20 +689,13 @@ enum ConnectionAction {
 }
 
 // Global state
-static mut PACKET_MAP: Option<Mutex<HashMap<u16, PacketInfo>>> = None;
 static mut APP_PORT: u16 = 0;
 
 #[derive(Clone, Debug)]
-struct PacketInfo {
+pub struct PacketInfo {
     src_ip: IpAddr,
     dst_ip: IpAddr,
     dst_port: u16,
-}
-
-pub fn initialize_packet_map() {
-    unsafe {
-        PACKET_MAP = Some(Mutex::new(HashMap::new()));
-    }
 }
 
 struct ActiveListeners(HashMap<(SocketAddr, TransportProtocol), IncomingTrafficInfo>);
@@ -609,70 +872,171 @@ async fn process_packet(
     mut packet: InternetPacket,
     action: &ConnectionAction,
     inject_handle: &DynWinDivertHandle<'_>,
-    active_listeners: &mut ActiveListeners,
+    _active_listeners: &mut ActiveListeners,
 ) -> Result<()> {
     match action {
         ConnectionAction::InterceptIncoming => {
             unsafe {
-                let _ = write_direct_log(&format!("Handling InterceptIncoming for {} (dst_port={})", packet.connection_id(), packet.dst_port()));
-                if packet.dst_port() == APP_PORT {
+                let _ = write_direct_log(&format!("Handling InterceptIncoming for {} (dst_port={}, src_port={})", packet.connection_id(), packet.dst_port(), packet.src_port()));
+                
+                let incoming_proxy_port = INCOMING_PROXY.load(Ordering::SeqCst) as u16;
+                
+                if packet.dst_port() == APP_PORT && incoming_proxy_port != 0 {
+                    // Check if source port is in agent ephemeral ports - if so, don't redirect
+                    let src_port = packet.src_port();
+                    {
+                        let agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
+                        if agent_ports.contains(&src_port) {
+                            let _ = write_direct_log(&format!("Source port {} is agent ephemeral port, forwarding unchanged", src_port));
+                            inject_handle
+                                .send(&WinDivertPacket {
+                                    address,
+                                    data: packet.inner().into(),
+                                })
+                                .context("failed to re-inject packet")?;
+                            return Ok(());
+                        }
+                    }
                     
-                    let mut incoming_traffic_info: IncomingTrafficInfo;
-                    if let Some(info) = active_listeners.get(packet.connection_id().src, packet.protocol()) {
-                        incoming_traffic_info = info.clone();
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to get incoming info"));
+                    // Packet going TO the application - redirect to incoming proxy
+                    let _ = write_direct_log(&format!("Redirecting incoming packet to proxy port {}", incoming_proxy_port));
+                    
+                    let dest_info = DestInfo {
+                        host: packet.src_ip().to_string(),
+                        port: packet.src_port(),
+                        version: format!("{}:{}", packet.dst_ip(), packet.dst_port()),
+                    };
+                    
+                    // Store original packet info for restoration
+                    {
+                        let mut map = REDIRECT_MAP.lock().unwrap();
+                        map.insert(src_port, dest_info);
                     }
-
-                    if !incoming_traffic_info.is_open_event_sent{
-                        let _ = write_direct_log(&format!("Sent SocketOpenEvent for {} ts={}", packet.connection_id(), address.event_timestamp()));
-                        incoming_traffic_info.is_open_event_sent = true
+                    
+                    // Redirect packet to incoming proxy
+                    match packet.src_ip() {
+                        IpAddr::V4(_) => {
+                            let ipv4_addr = Ipv4Addr::new(127, 0, 0, 1);
+                            packet.set_dst_ip(IpAddr::V4(ipv4_addr));
+                            packet.set_src_ip(IpAddr::V4(ipv4_addr));
+                        }
+                        IpAddr::V6(_) => {
+                            let ipv6_addr = Ipv6Addr::LOCALHOST;
+                            packet.set_dst_ip(IpAddr::V6(ipv6_addr));
+                            packet.set_src_ip(IpAddr::V6(ipv6_addr));
+                        }
                     }
-
-                    let mut ip_packet_buffer = packet.clone().inner();
-                    let tcp_payload = if let Ok(Some(payload)) = extract_tcp_payload(&packet, &mut ip_packet_buffer[..]) {
-                        payload.to_vec()
-                    } else {
-                        vec![]
+                    packet.set_dst_port(incoming_proxy_port);
+                    packet.recalculate_tcp_checksum();
+                    
+                    let buff = packet.clone().inner();
+                    let Ok(mut packet1) = SimplePacket::try_from(buff) else {
+                        let _ = write_direct_log("Error converting to SimplePacket");
+                        return Err(anyhow::anyhow!("Failed to convert to SimplePacket"));
                     };
 
-                    if !tcp_payload.is_empty() && !(tcp_payload.len() == 1 && tcp_payload[0] == 0) {
-                        let no_of_bytes = tcp_payload.len() as u32;
-                        incoming_traffic_info.read_bytes = incoming_traffic_info.read_bytes + no_of_bytes;
-                        let _ = write_direct_log(&format!("Sent SocketDataEvent (incoming) for {} bytes={}", packet.connection_id(), no_of_bytes));
-                    }
-                    active_listeners.insert(packet.connection_id().src, packet.protocol(), incoming_traffic_info);
-                }
-                if packet.src_port() == APP_PORT {
-                    let mut incoming_traffic_info: IncomingTrafficInfo;
-                    if let Some(info) = active_listeners.get(packet.connection_id().dst, packet.protocol()) {
-                        incoming_traffic_info = info.clone();
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to get incoming info SRC"));
-                    }
-                    let mut ip_packet_buffer = packet.clone().inner();
-                    let tcp_payload = if let Ok(Some(payload)) = extract_tcp_payload(&packet, &mut ip_packet_buffer[..]) {
-                        payload.to_vec()
-                    } else {
-                        vec![]
+                    packet1.fill_ip_checksum();
+                    let buff1 = packet1.into_inner();
+
+                    let packet2 = match InternetPacket::try_from(buff1) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                            return Err(anyhow::anyhow!("Failed to parse InternetPacket: {:?}", e));
+                        }
                     };
-                    if !tcp_payload.is_empty() && !(tcp_payload.len() == 1 && tcp_payload[0] == 0) {
-                        let no_of_bytes = tcp_payload.len() as u32;
-                        incoming_traffic_info.written_bytes = incoming_traffic_info.written_bytes + no_of_bytes;
-                        let _ = write_direct_log(&format!("Sent SocketDataEvent (outgoing) for {} bytes={}", packet.connection_id(), no_of_bytes));
-                        incoming_traffic_info.read_bytes = 0;
-                        incoming_traffic_info.written_bytes = 0;
-                        active_listeners.insert(packet.connection_id().dst, packet.protocol(), incoming_traffic_info);
+
+                    let winpacket = WinDivertPacket {
+                        address,
+                        data: packet2.inner().into(),
+                    };
+
+                    if let Err(e) = inject_handle.send(&winpacket) {
+                        let _ = write_direct_log(&format!("Failed to send redirected incoming packet: {:?}", e));
+                    } else {
+                        let _ = write_direct_log("Incoming packet redirected to proxy successfully!");
                     }
+                } else if packet.src_port() == incoming_proxy_port && incoming_proxy_port != 0 {
+                    // Packet coming FROM the incoming proxy - restore original destination
+                    let _ = write_direct_log(&format!("Restoring packet from incoming proxy port {}", incoming_proxy_port));
+                    
+                    let dst_port = packet.dst_port();
+                    let dest_info: DestInfo = {
+                        let map = REDIRECT_MAP.lock().unwrap();
+                        if let Some(dest_info) = map.get(&dst_port) {
+                            dest_info.clone()
+                        } else {
+                            let _ = write_direct_log(&format!("Failed to get proxy info for port: {}", dst_port));
+                            return Err(anyhow::anyhow!("Failed to get proxy info for port: {}", dst_port));
+                        }
+                    };
+
+                    // Parse original packet information from DestInfo
+                    // host contains original src_ip, port contains original src_port
+                    // version contains "dst_ip:dst_port"
+                    let original_src_ip: IpAddr = dest_info.host.parse()
+                        .map_err(|_| anyhow::anyhow!("Failed to parse original src_ip: {}", dest_info.host))?;
+                    let _original_src_port = dest_info.port; // This was the original src_port, but we don't need it for restoration
+                    
+                    // Parse dst_ip:dst_port from version field
+                    let version_parts: Vec<&str> = dest_info.version.split(':').collect();
+                    if version_parts.len() != 2 {
+                        return Err(anyhow::anyhow!("Invalid version format: {}", dest_info.version));
+                    }
+                    
+                    let original_dst_ip: IpAddr = version_parts[0].parse()
+                        .map_err(|_| anyhow::anyhow!("Failed to parse original dst_ip: {}", version_parts[0]))?;
+                    let original_dst_port: u16 = version_parts[1].parse()
+                        .map_err(|_| anyhow::anyhow!("Failed to parse original dst_port: {}", version_parts[1]))?;
+
+                    // Restore original packet information
+                    packet.set_dst_ip(original_src_ip);
+                    packet.set_src_ip(original_dst_ip);
+                    packet.set_src_port(original_dst_port);
+                    packet.recalculate_tcp_checksum();
+
+                    let buff = packet.clone().inner();
+                    let Ok(mut packet1) = SimplePacket::try_from(buff) else {
+                        let _ = write_direct_log("Error converting to SimplePacket");
+                        return Err(anyhow::anyhow!("Failed to convert to SimplePacket"));
+                    };
+
+                    packet1.fill_ip_checksum();
+                    let buff1 = packet1.into_inner();
+
+                    let packet2 = match InternetPacket::try_from(buff1) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                            return Err(anyhow::anyhow!("Failed to parse InternetPacket: {:?}", e));
+                        }
+                    };
+
+                    let winpacket = WinDivertPacket {
+                        address,
+                        data: packet2.inner().into(),
+                    };
+
+                    if let Err(e) = inject_handle.send(&winpacket) {
+                        let _ = write_direct_log(&format!("Failed to send restored packet: {:?}", e));
+                    } else {
+                        let _ = write_direct_log("Packet from proxy restored successfully!");
+                    }
+                } else {
+                    // Forward other packets unchanged
+                    let _ = write_direct_log(&format!(
+                        "Forwarding unchanged: {} {}",
+                        packet.connection_id(),
+                        packet.tcp_flag_str()
+                    ));
+                    inject_handle
+                        .send(&WinDivertPacket {
+                            address,
+                            data: packet.inner().into(),
+                        })
+                        .context("failed to re-inject packet")?;
                 }
             }
-
-            inject_handle
-                .send(&WinDivertPacket {
-                    address,
-                    data: packet.inner().into(),
-                })
-                .context("failed to re-inject packet")?;
         }
         ConnectionAction::None => {
             inject_handle
@@ -688,16 +1052,14 @@ async fn process_packet(
 
             if packet.src_port() != 16789 {
                 let src_port = packet.src_port();
-                let packet_info: PacketInfo = PacketInfo {
-                    src_ip: packet.src_ip(),
-                    dst_ip: packet.dst_ip(),
-                    dst_port: packet.dst_port(),
+                let dest_info = DestInfo {
+                    host: packet.src_ip().to_string(),
+                    port: packet.src_port(),
+                    version: format!("{}:{}", packet.dst_ip(), packet.dst_port()),
                 };
-                unsafe {
-                    if let Some(ref packet_map) = PACKET_MAP {
-                        let mut map = packet_map.lock().unwrap();
-                        map.insert(src_port, packet_info);
-                    }
+                {
+                    let mut map = REDIRECT_MAP.lock().unwrap();
+                    map.insert(src_port, dest_info);
                 }
 
                 match packet.src_ip() {
@@ -744,22 +1106,37 @@ async fn process_packet(
                 }
             } else {
                 let src_port = packet.dst_port();
-                let packet_info: PacketInfo  = unsafe {
-                    if let Some(ref packet_map) = PACKET_MAP {
-                        let map = packet_map.lock().unwrap();
-                        if let Some(packet_info) = map.get(&src_port) {
-                            packet_info.clone()
-                        } else {
-                            return Err(anyhow::anyhow!("Failed to get info : {}", src_port));
-                        }
+                let dest_info: DestInfo = {
+                    let map = REDIRECT_MAP.lock().unwrap();
+                    if let Some(dest_info) = map.get(&src_port) {
+                        dest_info.clone()
                     } else {
-                        return Err(anyhow::anyhow!("Packet map not initialized."));
+                        return Err(anyhow::anyhow!("Failed to get info : {}", src_port));
                     }
                 };
 
-                packet.set_dst_ip(packet_info.src_ip);
-                packet.set_src_ip(packet_info.dst_ip);
-                packet.set_src_port(packet_info.dst_port);
+                // Parse original packet information from DestInfo
+                // host contains original src_ip, port contains original src_port
+                // version contains "dst_ip:dst_port"
+                let original_src_ip: IpAddr = dest_info.host.parse()
+                    .map_err(|_| anyhow::anyhow!("Failed to parse original src_ip: {}", dest_info.host))?;
+                let _original_src_port = dest_info.port; // This was the original src_port
+                
+                // Parse dst_ip:dst_port from version field
+                let version_parts: Vec<&str> = dest_info.version.split(':').collect();
+                if version_parts.len() != 2 {
+                    return Err(anyhow::anyhow!("Invalid version format: {}", dest_info.version));
+                }
+                
+                let original_dst_ip: IpAddr = version_parts[0].parse()
+                    .map_err(|_| anyhow::anyhow!("Failed to parse original dst_ip: {}", version_parts[0]))?;
+                let original_dst_port: u16 = version_parts[1].parse()
+                    .map_err(|_| anyhow::anyhow!("Failed to parse original dst_port: {}", version_parts[1]))?;
+
+                // Restore original packet information
+                packet.set_dst_ip(original_src_ip);
+                packet.set_src_ip(original_dst_ip);
+                packet.set_src_port(original_dst_port);
                 packet.recalculate_tcp_checksum();
 
                 let buff = packet.clone().inner();
@@ -793,41 +1170,4 @@ async fn process_packet(
         }
     }
     Ok(())
-}
-
-fn extract_tcp_payload(packet: &InternetPacket, buff: &mut [u8]) -> Result<Option<Vec<u8>>> {
-    let tcp_payload;
-
-    match packet.src_ip() {
-        IpAddr::V4(_) => {
-            // Handle IPv4 packets
-            let mut ipv4_packet = Ipv4Packet::new_unchecked(buff);
-            if ipv4_packet.next_header() == IpProtocol::Tcp {
-                let payload = ipv4_packet.payload_mut();
-                if let Ok(mut tcp_packet) = TcpPacket::new_checked(payload) {
-                    tcp_payload = Some(tcp_packet.payload_mut().to_vec());
-                } else {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(None);
-            }
-        }
-        IpAddr::V6(_) => {
-            // Handle IPv6 packets
-            let mut ipv6_packet: Ipv6Packet<&mut [u8]> = Ipv6Packet::new_unchecked(buff);
-            if ipv6_packet.next_header() == IpProtocol::Tcp {
-                let payload = ipv6_packet.payload_mut();
-                if let Ok(mut tcp_packet) = TcpPacket::new_checked(payload) {
-                    tcp_payload = Some(tcp_packet.payload_mut().to_vec());
-                } else {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(None);
-            }
-        }
-    }
-
-    Ok(tcp_payload)
 }
