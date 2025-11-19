@@ -8,13 +8,15 @@ package redirector
 
 // Rust FFI prototypes (must match the signatures in src/ffi.rs)
 typedef struct {
-    char* host;
-    unsigned int port;
-    char* version;
+    uint32_t ip_version;
+    uint32_t dest_ip4;
+    uint32_t dest_ip6[4];
+    uint32_t dest_port;
+    uint32_t kernel_pid;
 } WinDest;
 
-unsigned int start_redirector(unsigned int client_pid, unsigned int agent_pid, unsigned int proxy_port, unsigned int incoming_proxy);
-unsigned int start_redirector_with_dll_path(unsigned int client_pid, unsigned int agent_pid, unsigned int proxy_port, unsigned int incoming_proxy, const char* dll_path);
+unsigned int start_redirector(unsigned int client_pid, unsigned int agent_pid, unsigned int proxy_port, unsigned int incoming_proxy, unsigned int mode);
+unsigned int start_redirector_with_dll_path(unsigned int client_pid, unsigned int agent_pid, unsigned int proxy_port, unsigned int incoming_proxy, unsigned int mode, const char* dll_path);
 unsigned int stop_redirector(void);
 WinDest get_destination(unsigned int src_port);
 unsigned int delete_destination(unsigned int src_port);
@@ -27,23 +29,25 @@ import (
 	"unsafe"
 )
 
-// Destination represents a redirect destination with host, port, and version
+// Destination represents a redirect destination with IP info
 type Destination struct {
-	Host    string
-	Port    uint32
-	Version string
+	IPVersion uint32
+	DestIP4   uint32
+	DestIP6   [4]uint32
+	DestPort  uint32
+	KernelPid uint32
 }
 
 // StartRedirector initializes and starts the Windows redirector with configuration
 // Returns error if already running or startup fails
-func StartRedirector(clientPID, agentPID, proxyPort, incomingProxy uint32) error {
-	return StartRedirectorWithDllPath(clientPID, agentPID, proxyPort, incomingProxy, "C:\\Users\\keploy\\ayush_work\\keploy\\pkg\\agent\\hooks\\windows\\assets\\WinDivert.dll")
+func StartRedirector(clientPID, agentPID, proxyPort, incomingProxy, mode uint32) error {
+	return StartRedirectorWithDllPath(clientPID, agentPID, proxyPort, incomingProxy, mode, "C:\\Users\\keploy\\ayush_work\\keploy\\pkg\\agent\\hooks\\windows\\assets\\WinDivert.dll")
 }
 
 // StartRedirectorWithDllPath initializes and starts the Windows redirector with configuration and custom DLL path
 // dllPath: path to WinDivert.dll, or empty string to use default search
 // Returns error if already running or startup fails
-func StartRedirectorWithDllPath(clientPID, agentPID, proxyPort, incomingProxy uint32, dllPath string) error {
+func StartRedirectorWithDllPath(clientPID, agentPID, proxyPort, incomingProxy, mode uint32, dllPath string) error {
 	var cDllPath *C.char
 	if dllPath == "" {
 		cDllPath = nil
@@ -53,7 +57,7 @@ func StartRedirectorWithDllPath(clientPID, agentPID, proxyPort, incomingProxy ui
 		cDllPath = cs
 	}
 
-	rc := C.start_redirector_with_dll_path(C.uint(clientPID), C.uint(agentPID), C.uint(proxyPort), C.uint(incomingProxy), cDllPath)
+	rc := C.start_redirector_with_dll_path(C.uint(clientPID), C.uint(agentPID), C.uint(proxyPort), C.uint(incomingProxy), C.uint(mode), cDllPath)
 	if rc == 0 {
 		return fmt.Errorf("start_redirector_with_dll_path failed (already running or error)")
 	}
@@ -74,16 +78,24 @@ func StopRedirector() error {
 // Returns (destination, true) if found, or (empty, false) if not found
 func GetDestination(srcPort uint32) (Destination, bool) {
 	dest := C.get_destination(C.uint(srcPort))
-	// defer C.free_windest(dest)
+	// defer C.free_windest(dest) // No longer needed since WinDest doesn't use dynamic allocation
 
-	if dest.host == nil {
+	if dest.ip_version == 0 {
 		return Destination{}, false
 	}
 
+	// Convert C array to Go array
+	var destIP6 [4]uint32
+	for i := 0; i < 4; i++ {
+		destIP6[i] = uint32(dest.dest_ip6[i])
+	}
+
 	return Destination{
-		Host:    C.GoString(dest.host),
-		Port:    uint32(dest.port),
-		Version: C.GoString(dest.version),
+		IPVersion: uint32(dest.ip_version),
+		DestIP4:   uint32(dest.dest_ip4),
+		DestIP6:   destIP6,
+		DestPort:  uint32(dest.dest_port),
+		KernelPid: uint32(dest.kernel_pid),
 	}, true
 }
 

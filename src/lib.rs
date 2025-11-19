@@ -189,6 +189,12 @@ impl LocalInterceptConf {
         
     log::debug!("Checking if should intercept process: {:?}", process_info);
 
+        // Don't intercept if this is the agent PID
+        if self.is_agent_pid(process_info.pid) {
+            log::debug!("Skipping intercept for agent PID: {}", process_info.pid);
+            return false;
+        }
+
         let mut intercept = false;
         for action in &self.actions {
             match action {
@@ -290,10 +296,13 @@ impl LocalInterceptConf {
 
 // C-compatible destination info struct
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub struct WinDest {
-    pub host: *mut c_char,
-    pub port: c_uint,
-    pub version: *mut c_char,
+    pub ip_version: c_uint,
+    pub dest_ip4: c_uint,
+    pub dest_ip6: [c_uint; 4],
+    pub dest_port: c_uint,
+    pub kernel_pid: c_uint,
 }
 
 // Global runtime state for FFI
@@ -302,10 +311,14 @@ pub static CLIENT_PID: AtomicU32 = AtomicU32::new(0);
 pub static AGENT_PID: AtomicU32 = AtomicU32::new(0);
 pub static PROXY_PORT: AtomicU32 = AtomicU32::new(0);
 pub static INCOMING_PROXY: AtomicU32 = AtomicU32::new(0);
+pub static MODE: AtomicU32 = AtomicU32::new(0);
 
 
 // Packet map: src_port -> packet info (src_ip, dst_ip, dst_port)
 pub static mut PACKET_MAP: Option<Mutex<HashMap<u16, PacketInfo>>> = None;
+
+// Redirect proxy map: src_port -> WinDest struct (for FFI)
+pub static mut REDIRECT_PROXY_MAP: Option<Mutex<HashMap<u16, WinDest>>> = None;
 
 // Agent ephemeral ports tracking
 pub static AGENT_EPHEMERAL_PORTS: Lazy<Mutex<HashSet<u16>>> = Lazy::new(|| Mutex::new(HashSet::new()));
@@ -342,9 +355,10 @@ pub async fn run_redirector() -> Result<()> {
 pub async fn run_redirector_with_dll_path(_dll_path: Option<&str>) -> Result<()> {
     log::debug!("Inside run_redirector main function");
 
-    // Initialize PACKET_MAP
+    // Initialize PACKET_MAP and REDIRECT_PROXY_MAP
     unsafe {
         PACKET_MAP = Some(Mutex::new(HashMap::new()));
+        REDIRECT_PROXY_MAP = Some(Mutex::new(HashMap::new()));
     }
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
@@ -431,22 +445,33 @@ pub async fn run_redirector_with_dll_path(_dll_path: Option<&str>) -> Result<()>
                     None => {
                         log::info!("New connection: {}", packet.connection_id());
                         
+                        // Decide action based on MODE and packet dst
                         let action: ConnectionAction = {
-                            unsafe {
-                                if packet.dst_port() == APP_PORT {
-                                    log::debug!("Registering incoming connection");
-                                    active_listeners.insert(
-                                        packet.connection_id().src,
-                                        packet.protocol(),
-                                        IncomingTrafficInfo {
-                                            is_open_event_sent: false,
-                                            written_bytes: 0,
-                                            read_bytes: 0,
-                                         });
-                                   ConnectionAction::InterceptIncoming
-                                } else {
-                                    ConnectionAction::None
+                            let mode = MODE.load(Ordering::SeqCst) as u32;
+                            // mode == 0 -> off (no interception)
+                            // mode == 1 -> record (only incoming allowed)
+                            // mode == 2 -> test (only outgoing allowed, no incoming)
+                            if mode == 0 || mode == 2 {
+                                ConnectionAction::None
+                            } else if mode == 1 {
+                                unsafe {
+                                    if packet.dst_port() == APP_PORT {
+                                        log::debug!("Registering incoming connection");
+                                        active_listeners.insert(
+                                            packet.connection_id().src,
+                                            packet.protocol(),
+                                            IncomingTrafficInfo {
+                                                is_open_event_sent: false,
+                                                written_bytes: 0,
+                                                read_bytes: 0,
+                                            });
+                                        ConnectionAction::InterceptIncoming
+                                    } else {
+                                        ConnectionAction::None
+                                    }
                                 }
+                            } else {
+                                ConnectionAction::None
                             }
                         };
                         insert_into_connections(
@@ -624,6 +649,40 @@ pub struct PacketInfo {
     pub dst_port: u16,
 }
 
+impl WinDest {
+    pub fn new(dest_ip: IpAddr, dest_port: u16, kernel_pid: u32) -> Self {
+        match dest_ip {
+            IpAddr::V4(ipv4) => {
+                let ip_bytes = ipv4.octets();
+                let dest_ip4 = u32::from_be_bytes(ip_bytes);
+                WinDest {
+                    ip_version: 4,
+                    dest_ip4,
+                    dest_ip6: [0; 4],
+                    dest_port: dest_port as c_uint,
+                    kernel_pid,
+                }
+            }
+            IpAddr::V6(ipv6) => {
+                let ip_bytes = ipv6.octets();
+                let dest_ip6 = [
+                    u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]),
+                    u32::from_be_bytes([ip_bytes[4], ip_bytes[5], ip_bytes[6], ip_bytes[7]]),
+                    u32::from_be_bytes([ip_bytes[8], ip_bytes[9], ip_bytes[10], ip_bytes[11]]),
+                    u32::from_be_bytes([ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]]),
+                ];
+                WinDest {
+                    ip_version: 6,
+                    dest_ip4: 0,
+                    dest_ip6,
+                    dest_port: dest_port as c_uint,
+                    kernel_pid,
+                }
+            }
+        }
+    }
+}
+
 struct ActiveListeners(HashMap<(SocketAddr, TransportProtocol), IncomingTrafficInfo>);
 
 impl ActiveListeners {
@@ -766,7 +825,9 @@ async fn insert_into_connections(
                 new_connection_id.src.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
                 new_connection_id.dst.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
             }
-            new_connection_id.src.set_port(16789);
+            // use configured proxy port
+            let proxy_port = PROXY_PORT.load(Ordering::SeqCst) as u16;
+            new_connection_id.src.set_port(proxy_port);
         }
         ConnectionAction::InterceptIncoming => {
             log::debug!("Setting up reverse connection for incoming intercept to port 3000");
@@ -778,7 +839,9 @@ async fn insert_into_connections(
                 new_connection_id.src.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
                 new_connection_id.dst.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
             }
-            new_connection_id.src.set_port(3000);
+            // use configured incoming proxy port
+            let incoming_proxy_port = INCOMING_PROXY.load(Ordering::SeqCst) as u16;
+            new_connection_id.src.set_port(incoming_proxy_port);
         }
         ConnectionAction::None => {
             // No action needed for None
@@ -850,7 +913,14 @@ async fn process_packet(
                     
                     if let Some(ref packet_map) = PACKET_MAP {
                         let mut map = packet_map.lock().unwrap();
-                        map.insert(src_port, packet_info);
+                        map.insert(src_port, packet_info.clone());
+                    }
+
+                    // Store redirect info for FFI
+                    let win_dest = WinDest::new(packet_info.dst_ip, packet_info.dst_port, 0);
+                    if let Some(ref redirect_map) = REDIRECT_PROXY_MAP {
+                        let mut map = redirect_map.lock().unwrap();
+                        map.insert(src_port, win_dest);
                     }
 
                     // Redirect to incoming proxy port on localhost
@@ -1002,7 +1072,14 @@ async fn process_packet(
                 unsafe {
                     if let Some(ref packet_map) = PACKET_MAP {
                         let mut map = packet_map.lock().unwrap();
-                        map.insert(src_port, packet_info);
+                        map.insert(src_port, packet_info.clone());
+                    }
+
+                    // Store redirect info for FFI
+                    let win_dest = WinDest::new(packet_info.dst_ip, packet_info.dst_port, 0);
+                    if let Some(ref redirect_map) = REDIRECT_PROXY_MAP {
+                        let mut map = redirect_map.lock().unwrap();
+                        map.insert(src_port, win_dest);
                     }
                 }
 

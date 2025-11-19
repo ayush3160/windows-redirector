@@ -12,7 +12,8 @@ func main() {
 	fmt.Println("Starting redirector with client_pid=1234, agent_pid=5678, proxy_port=8080, incoming_proxy=3000")
 
 	// Test with default DLL path (original function)
-	if err := redirector.StartRedirector(1234, 5678, 8080, 3000); err != nil {
+	// mode: 0=off, 1=record, 2=test
+	if err := redirector.StartRedirector(1234, 5678, 8080, 3000, 0); err != nil {
 		fmt.Println("StartRedirector error:", err)
 		return
 	}

@@ -19,8 +19,9 @@ pub extern "C" fn start_redirector(
     agent_pid: c_uint,
     proxy_port: c_uint,
     incoming_proxy: c_uint,
+    mode: c_uint,
 ) -> c_uint {
-    start_redirector_with_dll_path(client_pid, agent_pid, proxy_port, incoming_proxy, std::ptr::null())
+    start_redirector_with_dll_path(client_pid, agent_pid, proxy_port, incoming_proxy, mode, std::ptr::null())
 }
 
 /// Initialize and start the Windows redirector with config parameters and custom DLL path
@@ -32,6 +33,7 @@ pub extern "C" fn start_redirector_with_dll_path(
     agent_pid: c_uint,
     proxy_port: c_uint,
     incoming_proxy: c_uint,
+    mode: c_uint,
     dll_path: *const c_char,
 ) -> c_uint {
     // Initialize file-only logger early so subsequent logs go to the file.
@@ -120,6 +122,7 @@ pub extern "C" fn start_redirector_with_dll_path(
     AGENT_PID.store(agent_pid, Ordering::SeqCst);
     PROXY_PORT.store(proxy_port, Ordering::SeqCst);
     INCOMING_PROXY.store(incoming_proxy, Ordering::SeqCst);
+    MODE.store(mode, Ordering::SeqCst);
 
     if logger_ok {
         log::debug!("Configuration stored, spawning redirector thread");
@@ -253,42 +256,42 @@ pub extern "C" fn stop_redirector() -> c_uint {
 }
 
 /// Get destination info for a source port
-/// Returns WinDest with allocated strings (caller must free with free_windest)
-/// Returns null pointers if not found
+/// Returns WinDest with destination IP and port info
+/// Returns all zeros if not found
 #[no_mangle]
 pub extern "C" fn get_destination(src_port: c_uint) -> WinDest {
     if src_port > 65535 {
         return WinDest {
-            host: std::ptr::null_mut(),
-            port: 0,
-            version: std::ptr::null_mut(),
+            ip_version: 0,
+            dest_ip4: 0,
+            dest_ip6: [0; 4],
+            dest_port: 0,
+            kernel_pid: 0,
         };
     }
 
+    println!("FFI get_destination called for src_port {}", src_port);
+
     unsafe {
-        if let Some(ref packet_map) = PACKET_MAP {
-            let map = packet_map.lock().unwrap();
+        if let Some(ref redirect_map) = REDIRECT_PROXY_MAP {
+            let map = redirect_map.lock().unwrap();
             match map.get(&(src_port as u16)) {
-                Some(packet_info) => {
-                    let host = CString::new(packet_info.src_ip.to_string()).unwrap_or_default();
-                    let version = CString::new(format!("{}:{}", packet_info.dst_ip, packet_info.dst_port)).unwrap_or_default();
-                    WinDest {
-                        host: host.into_raw(),
-                        port: 0, // Not directly stored in PacketInfo
-                        version: version.into_raw(),
-                    }
-                }
+                Some(dest_info) => *dest_info,
                 None => WinDest {
-                    host: std::ptr::null_mut(),
-                    port: 0,
-                    version: std::ptr::null_mut(),
+                    ip_version: 0,
+                    dest_ip4: 0,
+                    dest_ip6: [0; 4],
+                    dest_port: 0,
+                    kernel_pid: 0,
                 },
             }
         } else {
             WinDest {
-                host: std::ptr::null_mut(),
-                port: 0,
-                version: std::ptr::null_mut(),
+                ip_version: 0,
+                dest_ip4: 0,
+                dest_ip6: [0; 4],
+                dest_port: 0,
+                kernel_pid: 0,
             }
         }
     }
@@ -303,8 +306,8 @@ pub extern "C" fn delete_destination(src_port: c_uint) -> c_uint {
     }
 
     unsafe {
-        if let Some(ref packet_map) = PACKET_MAP {
-            let mut map = packet_map.lock().unwrap();
+        if let Some(ref redirect_map) = REDIRECT_PROXY_MAP {
+            let mut map = redirect_map.lock().unwrap();
             if map.remove(&(src_port as u16)).is_some() {
                 1 // success
             } else {
@@ -316,18 +319,9 @@ pub extern "C" fn delete_destination(src_port: c_uint) -> c_uint {
     }
 }
 
-/// Free a WinDest structure allocated by get_destination
+/// Free a WinDest structure (no-op since WinDest no longer uses allocated memory)
 #[no_mangle]
-pub extern "C" fn free_windest(dest: WinDest) {
-    if !dest.host.is_null() {
-        unsafe {
-            let _ = CString::from_raw(dest.host);
-        }
-    }
-    if !dest.version.is_null() {
-        unsafe {
-            let _ = CString::from_raw(dest.version);
-        }
-    }
+pub extern "C" fn free_windest(_dest: WinDest) {
+    // No-op: WinDest now uses fixed-size fields, no dynamic allocation
 }
 
