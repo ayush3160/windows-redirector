@@ -1,18 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::thread;
 use std::time::Duration;
 use std::sync::Mutex;
-// Removed unused imports - keeping this line for potential future use
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::Mutex as StdMutex;
 use std::os::raw::{c_char, c_uint};
 
 use anyhow::{Context, Result};
 use internet_packet::{ConnectionId, InternetPacket, TransportProtocol};
-use log::{Record, Metadata, LevelFilter};
+use log::LevelFilter;
+use chrono::Local;
+// fern used to configure a file-only logger
+use fern;
 use lru_time_cache::LruCache;
+use windivert::address::WinDivertAddress;
+use windivert::prelude::*;
 
 // Windows API types
 #[cfg(windows)]
@@ -50,16 +51,12 @@ extern "system" {
 
 // FFI and dynamic WinDivert modules
 pub mod ffi;
-pub mod dyn_windivert;
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{UnboundedSender};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use once_cell::sync::Lazy;
-
-// Import our dynamic WinDivert types
-use dyn_windivert::{DynWinDivert, DynWinDivertHandle, WinDivertAddress, WinDivertEvent, WinDivertPacket, WINDIVERT_FLAG_SNIFF, WINDIVERT_FLAG_RECV_ONLY, WINDIVERT_FLAG_SEND_ONLY};
 
 // Type definitions for intercept configuration
 #[cfg(windows)]
@@ -190,7 +187,7 @@ impl LocalInterceptConf {
 
     pub fn should_intercept(&self, process_info: &ProcessInfo) -> bool {
         
-        let _ = write_direct_log(&format!("Checking if should intercept process: {:?}", process_info));
+    log::debug!("Checking if should intercept process: {:?}", process_info);
 
         let mut intercept = false;
         for action in &self.actions {
@@ -288,33 +285,8 @@ impl LocalInterceptConf {
     }
 }
 
-// Simple file logger implementation
-struct SimpleFileLogger {
-    file: StdMutex<std::fs::File>,
-    level: LevelFilter,
-}
-
-impl log::Log for SimpleFileLogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= self.level
-    }
-
-    fn log(&self, record: &Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-        let mut f = self.file.lock().unwrap();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        let secs = now.as_secs();
-        let millis = now.subsec_millis();
-        let _ = writeln!(f, "{}.{} [{}] - {}", secs, millis, record.level(), record.args());
-    }
-
-    fn flush(&self) {
-        let mut f = self.file.lock().unwrap();
-        let _ = f.flush();
-    }
-}
+// We use `fern` to configure a file-only logger. This keeps logging out of stdout/stderr
+// and writes all logs (debug+info) into windows_redirector.log.
 
 // C-compatible destination info struct
 #[repr(C)]
@@ -322,14 +294,6 @@ pub struct WinDest {
     pub host: *mut c_char,
     pub port: c_uint,
     pub version: *mut c_char,
-}
-
-// Destination info stored internally
-#[derive(Clone, Debug)]
-pub struct DestInfo {
-    pub host: String,
-    pub port: u16,
-    pub version: String,
 }
 
 // Global runtime state for FFI
@@ -340,118 +304,67 @@ pub static PROXY_PORT: AtomicU32 = AtomicU32::new(0);
 pub static INCOMING_PROXY: AtomicU32 = AtomicU32::new(0);
 
 
-// Redirect map: src_port -> destination info (host, port, version)
-pub static REDIRECT_MAP: Lazy<Mutex<HashMap<u16, DestInfo>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+// Packet map: src_port -> packet info (src_ip, dst_ip, dst_port)
+pub static mut PACKET_MAP: Option<Mutex<HashMap<u16, PacketInfo>>> = None;
 
 // Agent ephemeral ports tracking
 pub static AGENT_EPHEMERAL_PORTS: Lazy<Mutex<HashSet<u16>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 pub fn init_file_logger() -> Result<(), ()> {
     let path = "windows_redirector.log";
-    let file = OpenOptions::new().create(true).append(true).open(path).map_err(|_| ())?;
-    let logger = SimpleFileLogger {
-        file: StdMutex::new(file),
-        level: LevelFilter::Info,
-    };
-    match log::set_boxed_logger(Box::new(logger)) {
-        Ok(()) => {
-            log::set_max_level(LevelFilter::Info);
-            Ok(())
-        }
-        Err(_) => {
-            let _ = write_direct_log("logger already initialized, falling back to direct writes");
-            Err(())
-        }
+    // If an old log exists, remove it at startup per request
+    if std::path::Path::new(path).exists() {
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Configure fern to write only to the log file at Debug level (captures debug + info)
+    let file = fern::log_file(path).map_err(|_| ())?;
+    let dispatch = fern::Dispatch::new()
+        .format(move |out, message, record| {
+            // timestamp, level, message
+            out.finish(format_args!("{} [{}] - {}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), record.level(), message))
+        })
+        .level(LevelFilter::Debug)
+        .chain(file);
+
+    match dispatch.apply() {
+        Ok(()) => Ok(()),
+        Err(_) => Err(()),
     }
 }
-
-pub fn write_direct_log(msg: &str) -> Result<(), ()> {
-    let path = "windows_redirector.log";
-    let mut f = OpenOptions::new().create(true).append(true).open(path).map_err(|_| ())?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
-    let _ = writeln!(f, "{}.{} [INFO] - {}", secs, millis, msg);
-    Ok(())
-}
+// write_direct_log removed: logging should use the log macros (debug!, info!, error!, etc.)
 
 // Main redirector logic that can be called from FFI
 pub async fn run_redirector() -> Result<()> {
     run_redirector_with_dll_path(None).await
 }
 
-pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> {
-    let _ = write_direct_log("Inside run_redirector main function");
+pub async fn run_redirector_with_dll_path(_dll_path: Option<&str>) -> Result<()> {
+    log::debug!("Inside run_redirector main function");
+
+    // Initialize PACKET_MAP
+    unsafe {
+        PACKET_MAP = Some(Mutex::new(HashMap::new()));
+    }
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
-    let _ = write_direct_log("Creating dynamic WinDivert loader...");
+    log::debug!("Creating dynamic WinDivert loader...");
     // Create dynamic WinDivert loader
-    let windivert = DynWinDivert::with_dll_path(dll_path).map_err(|e| {
-        let error_msg = format!("Failed to create WinDivert loader: {:?}", e);
-        let _ = write_direct_log(&error_msg);
-        let _ = write_direct_log("This usually means WinDivert.dll is not available or the application needs Administrator privileges");
-        anyhow::anyhow!(error_msg)
-    })?;
-
-    let _ = write_direct_log("Creating WinDivert socket handle...");
-    // Create separate WinDivert instances for each thread due to lifetime constraints
-    let tx_clone: UnboundedSender<Event> = event_tx.clone();
-    let dll_path_clone = dll_path.map(|s| s.to_string());
-    std::thread::spawn(move || {
-        let windivert = match DynWinDivert::with_dll_path(dll_path_clone.as_deref()) {
-            Ok(wd) => wd,
-            Err(e) => {
-                let _ = write_direct_log(&format!("Failed to create socket WinDivert: {:?}", e));
-                return;
-            }
-        };
-        
-        let socket_handle = match windivert.open_socket("tcp", 1041, WINDIVERT_FLAG_RECV_ONLY | WINDIVERT_FLAG_SNIFF) {
-            Ok(handle) => handle,
-            Err(e) => {
-                let _ = write_direct_log(&format!("Failed to create socket handle in thread: {:?}", e));
-                return;
-            }
-        };
-        
-        relay_socket_events(socket_handle, tx_clone);
-    });
-    let _ = write_direct_log("Spawned socket events thread");
+    
+    let socket_handle: WinDivert<SocketLayer> = WinDivert::socket(
+        "tcp",
+        1041,
+        WinDivertFlags::new().set_recv_only().set_sniff(),
+    )?;
+    let network_handle: WinDivert<NetworkLayer> = WinDivert::network("tcp", 1040, WinDivertFlags::new())?;
+    let inject_handle: WinDivert<NetworkLayer> = WinDivert::network("false", 1039, WinDivertFlags::new().set_send_only())?;
 
     let tx_clone: UnboundedSender<Event> = event_tx.clone();
-    let dll_path_clone = dll_path.map(|s| s.to_string());
-    std::thread::spawn(move || {
-        let windivert = match DynWinDivert::with_dll_path(dll_path_clone.as_deref()) {
-            Ok(wd) => wd,
-            Err(e) => {
-                let _ = write_direct_log(&format!("Failed to create network WinDivert: {:?}", e));
-                return;
-            }
-        };
-        
-        let network_handle = match windivert.open_network("tcp", 1040, 0) {
-            Ok(handle) => handle,
-            Err(e) => {
-                let _ = write_direct_log(&format!("Failed to create network handle in thread: {:?}", e));
-                return;
-            }
-        };
-        
-        relay_network_events(network_handle, tx_clone);
-    });
-    let _ = write_direct_log("Spawned network events thread");
+    thread::spawn(move || relay_socket_events(socket_handle, tx_clone));
+    let tx_clone: UnboundedSender<Event> = event_tx.clone();
+    thread::spawn(move || relay_network_events(network_handle, tx_clone));
 
-    let _ = write_direct_log("Creating WinDivert inject handle...");
-    let inject_handle = windivert.open_network("tcp", 1039, WINDIVERT_FLAG_SEND_ONLY)
-        .map_err(|e| {
-            let error_msg = format!("Failed to create inject handle: {:?}", e);
-            let _ = write_direct_log(&error_msg);
-            let _ = write_direct_log("This usually means the application needs Administrator privileges");
-            anyhow::anyhow!(error_msg)
-        })?;
-        
-    let _ = write_direct_log("Created inject handle successfully");
 
     let client_pid_value = CLIENT_PID.load(Ordering::SeqCst);
     let agent_pid_value = AGENT_PID.load(Ordering::SeqCst);
@@ -473,10 +386,10 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
         LocalInterceptConf::disabled()
     };
     
-    let _ = write_direct_log(&format!("Initialized LocalInterceptConf with client_pid: {:?}, agent_pid: {:?}", client_pid, agent_pid));
-    let _ = write_direct_log("Entering main loop 2");
+    log::debug!("Initialized LocalInterceptConf with client_pid: {:?}, agent_pid: {:?}", client_pid, agent_pid);
+    log::debug!("Entering main loop 2");
 
-    let _ = write_direct_log(&format!("Agent PID: {}", state.agent_pid.unwrap()));
+    log::debug!("Agent PID: {}", state.agent_pid.unwrap());
 
     let mut connections = LruCache::<ConnectionId, ConnectionState>::with_expiry_duration(
         Duration::from_secs(60 * 10),
@@ -486,7 +399,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
     loop {
         // Check if we should stop (for FFI integration)
         if !RUNNING.load(Ordering::SeqCst) {
-            let _ = write_direct_log("Stopping redirector as requested");
+            log::info!("Stopping redirector as requested");
             break;
         }
         
@@ -498,7 +411,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                 let packet: InternetPacket = match InternetPacket::try_from(data) {
                     Ok(p) => p,
                     Err(e) => {
-                        let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                        log::error!("Error parsing packet: {:?}", e);
                         continue;
                     }
                 };
@@ -516,12 +429,12 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                         }
                     },
                     None => {
-                        let _ = write_direct_log(&format!("New connection: {}", packet.connection_id()));
+                        log::info!("New connection: {}", packet.connection_id());
                         
                         let action: ConnectionAction = {
                             unsafe {
                                 if packet.dst_port() == APP_PORT {
-                                    let _ = write_direct_log("Registering incoming connection");
+                                    log::debug!("Registering incoming connection");
                                     active_listeners.insert(
                                         packet.connection_id().src,
                                         packet.protocol(),
@@ -550,15 +463,16 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                     }
                 }
             }
-            Event::SocketInfo(address) => {
-                let _ = write_direct_log("Processing socket info event");
+            Event::SocketInfo(address) => {    
                 
+                log::debug!("Processing socket event: {:?} for PID {}", address.event(), address.process_id());
+
                 if address.process_id() == 4 {
                     continue; // Skip system process
                 }
 
                 let Ok(proto) = TransportProtocol::try_from(address.protocol()) else {
-                    let _ = write_direct_log(&format!("Unknown transport protocol: {}", address.protocol()));
+                    log::debug!("Unknown transport protocol: {}", address.protocol());
                     continue;
                 };
                 
@@ -582,6 +496,18 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                         if !make_entry {
                             continue;
                         }
+
+                        unsafe {
+                            log::info!("here it is {} {}", address.remote_port(), APP_PORT);
+                            if address.remote_port() == APP_PORT {
+                                log::info!("dest");
+                                continue;
+                            }
+                            if address.local_port() == APP_PORT {
+                                log::info!("client");
+                                continue;
+                            }
+                        };
 
                         let proc_info = {
                             let pid: u32 = address.process_id();
@@ -626,7 +552,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                         if state.should_intercept(&proc_info) {
                             unsafe {
                                 APP_PORT = address.local_port();
-                                let _ = write_direct_log(&format!("Setting app port to {}", APP_PORT));
+                                log::debug!("Setting app port to {}", APP_PORT);
                             }
                         }
                     }
@@ -638,7 +564,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                         if state.is_agent_pid(pid) {
                             let mut agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
                             agent_ports.insert(port);
-                            let _ = write_direct_log(&format!("Agent PID {} bound to port {}, added to ephemeral ports", pid, port));
+                            log::debug!("Agent PID {} bound to port {}, added to ephemeral ports", pid, port);
                         }
                     }
                     WinDivertEvent::SocketClose => {
@@ -655,7 +581,7 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
                         if state.is_agent_pid(pid) {
                             let mut agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
                             if agent_ports.remove(&port) {
-                                let _ = write_direct_log(&format!("Agent PID {} closed port {}, removed from ephemeral ports", pid, port));
+                                log::debug!("Agent PID {} closed port {}, removed from ephemeral ports", pid, port);
                             }
                         }
                     }
@@ -671,14 +597,14 @@ pub async fn run_redirector_with_dll_path(dll_path: Option<&str>) -> Result<()> 
 // Helper types and functions
 #[derive(Debug)]
 enum Event {
-    NetworkPacket(WinDivertAddress, Vec<u8>),
-    SocketInfo(WinDivertAddress),
+    NetworkPacket(WinDivertAddress<NetworkLayer>, Vec<u8>),
+    SocketInfo(WinDivertAddress<SocketLayer>),
 }
 
 #[derive(Debug)]
 enum ConnectionState {
     Known(ConnectionAction),
-    Unknown(Vec<(WinDivertAddress, InternetPacket)>),
+    Unknown(Vec<(WinDivertAddress<NetworkLayer>, InternetPacket)>),
 }
 
 #[derive(Debug, Clone)]
@@ -693,9 +619,9 @@ static mut APP_PORT: u16 = 0;
 
 #[derive(Clone, Debug)]
 pub struct PacketInfo {
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
-    dst_port: u16,
+    pub src_ip: IpAddr,
+    pub dst_ip: IpAddr,
+    pub dst_port: u16,
 }
 
 struct ActiveListeners(HashMap<(SocketAddr, TransportProtocol), IncomingTrafficInfo>);
@@ -741,22 +667,22 @@ impl ActiveListeners {
 }
 
 /// Repeatedly call WinDivertRecvEx to get socket info and feed them into the channel.
-fn relay_socket_events(handle: DynWinDivertHandle, tx: UnboundedSender<Event>) {
-    let _ = write_direct_log("Socket events relay thread started");
+fn relay_socket_events(handle: WinDivert<SocketLayer>, tx: UnboundedSender<Event>) {
+    log::debug!("Socket events relay thread started");
     loop {
         let packets = handle.recv_ex(1);
         match packets {
             Ok(packets) => {
                 for packet in packets {
                     if tx.send(Event::SocketInfo(packet.address)).is_err() {
-                        let _ = write_direct_log("Socket events channel closed, exiting thread");
+                        log::debug!("Socket events channel closed, exiting thread");
                         return;
                     }
                 }
             }
             Err(err) => {
                 let error_msg = format!("WinDivert Socket Error: {:?}", err);
-                let _ = write_direct_log(&error_msg);
+                log::error!("{}", error_msg);
                 return;
             }
         };
@@ -764,28 +690,29 @@ fn relay_socket_events(handle: DynWinDivertHandle, tx: UnboundedSender<Event>) {
 }
 
 /// Repeatedly call WinDivertRecvEx to get network packets and feed them into the channel.
-fn relay_network_events(handle: DynWinDivertHandle, tx: UnboundedSender<Event>) {
-    let _ = write_direct_log("Network events relay thread started");
+fn relay_network_events(handle: WinDivert<NetworkLayer>, tx: UnboundedSender<Event>) {
+    log::debug!("Network events relay thread started");
     const MAX_PACKETS: usize = 1;
     const MAX_PACKET_SIZE: usize = 65535;
     let mut buf = [0u8; MAX_PACKET_SIZE * MAX_PACKETS];
     loop {
-        let packets = handle.recv_ex_with_buffer(&mut buf, MAX_PACKETS);
+        // Use the crate recv_ex with a buffer
+    let packets = handle.recv_ex(Some(&mut buf[..]), MAX_PACKETS);
         match packets {
             Ok(packets) => {
                 for packet in packets {
                     if tx
-                        .send(Event::NetworkPacket(packet.address, packet.data))
+                        .send(Event::NetworkPacket(packet.address, packet.data.into_owned()))
                         .is_err()
                     {
-                        let _ = write_direct_log("Network events channel closed, exiting thread");
+                        log::debug!("Network events channel closed, exiting thread");
                         return;
                     }
                 }
             }
             Err(err) => {
                 let error_msg = format!("WinDivert Network Error: {:?}", err);
-                let _ = write_direct_log(&error_msg);
+                log::error!("{}", error_msg);
                 return;
             }
         };
@@ -823,14 +750,15 @@ async fn insert_into_connections(
     action: &ConnectionAction,
     _event: &WinDivertEvent,
     connections: &mut LruCache<ConnectionId, ConnectionState>,
-    inject_handle: &DynWinDivertHandle<'_>,
+    inject_handle: &WinDivert<NetworkLayer>,
     active_listeners: &mut ActiveListeners,
 ) -> Result<()> {
-    let _ = write_direct_log(&format!("Adding connection: {} with action: {:?}", &connection_id, action));
+    log::debug!("Adding connection: {} with action: {:?}", &connection_id, action);
 
     let mut new_connection_id = connection_id.reverse();
     match action { 
-        ConnectionAction::InterceptOutgoing(ProcessInfo { pid: _, process_name: _ }) => {
+        ConnectionAction::InterceptOutgoing(ProcessInfo { pid, process_name }) => {
+            log::debug!("Setting up reverse connection for outgoing intercept from PID {} ({:?}) to port 16789", pid, process_name);
             if connection_id.src.is_ipv6() {
                 new_connection_id.src.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
                 new_connection_id.dst.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
@@ -840,11 +768,20 @@ async fn insert_into_connections(
             }
             new_connection_id.src.set_port(16789);
         }
-        ConnectionAction::None => {
-            let _ = write_direct_log("No action needed for connection");
-        }
         ConnectionAction::InterceptIncoming => {
-            let _ = write_direct_log("Intercepting incoming connection");
+            log::debug!("Setting up reverse connection for incoming intercept to port 3000");
+            // Redirect incoming connections to port 3000 on localhost
+            if connection_id.src.is_ipv6() {
+                new_connection_id.src.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
+                new_connection_id.dst.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
+            } else {
+                new_connection_id.src.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+                new_connection_id.dst.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            }
+            new_connection_id.src.set_port(3000);
+        }
+        ConnectionAction::None => {
+            // No action needed for None
         }
     }
 
@@ -868,52 +805,55 @@ async fn insert_into_connections(
 }
 
 async fn process_packet(
-    address: WinDivertAddress,
+    address: WinDivertAddress<NetworkLayer>,
     mut packet: InternetPacket,
     action: &ConnectionAction,
-    inject_handle: &DynWinDivertHandle<'_>,
+    inject_handle: &WinDivert<NetworkLayer>,
     _active_listeners: &mut ActiveListeners,
 ) -> Result<()> {
     match action {
         ConnectionAction::InterceptIncoming => {
             unsafe {
-                let _ = write_direct_log(&format!("Handling InterceptIncoming for {} (dst_port={}, src_port={})", packet.connection_id(), packet.dst_port(), packet.src_port()));
-                
                 let incoming_proxy_port = INCOMING_PROXY.load(Ordering::SeqCst) as u16;
                 
-                if packet.dst_port() == APP_PORT && incoming_proxy_port != 0 {
-                    // Check if source port is in agent ephemeral ports - if so, don't redirect
-                    let src_port = packet.src_port();
-                    {
-                        let agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
-                        if agent_ports.contains(&src_port) {
-                            let _ = write_direct_log(&format!("Source port {} is agent ephemeral port, forwarding unchanged", src_port));
-                            inject_handle
-                                .send(&WinDivertPacket {
-                                    address,
-                                    data: packet.inner().into(),
-                                })
-                                .context("failed to re-inject packet")?;
-                            return Ok(());
-                        }
+                log::info!(
+                    "Intercepting incoming: {} {} protocol={}",
+                    packet.connection_id(),
+                    packet.tcp_flag_str(),
+                    packet.protocol()
+                );
+
+                // If this packet is destined to the app port but its source port
+                // is one of the agent's ephemeral ports, do not intercept it here.
+                if packet.dst_port() == APP_PORT {
+                    let agent_ports = AGENT_EPHEMERAL_PORTS.lock().unwrap();
+                    if agent_ports.contains(&packet.src_port()) {
+                        log::debug!("Skipping intercept for packet from agent ephemeral port {}", packet.src_port());
+                        inject_handle
+                            .send(&WinDivertPacket {
+                                address,
+                                data: packet.inner().into(),
+                            })
+                            .context("failed to re-inject packet")?;
+                        return Ok(());
                     }
-                    
-                    // Packet going TO the application - redirect to incoming proxy
-                    let _ = write_direct_log(&format!("Redirecting incoming packet to proxy port {}", incoming_proxy_port));
-                    
-                    let dest_info = DestInfo {
-                        host: packet.src_ip().to_string(),
-                        port: packet.src_port(),
-                        version: format!("{}:{}", packet.dst_ip(), packet.dst_port()),
+                }
+
+                if packet.dst_port() == APP_PORT {
+                    // Store original packet info for reverse direction
+                    let src_port = packet.src_port();
+                    let packet_info = PacketInfo {
+                        src_ip: packet.src_ip(),
+                        dst_ip: packet.dst_ip(),
+                        dst_port: packet.dst_port(),
                     };
                     
-                    // Store original packet info for restoration
-                    {
-                        let mut map = REDIRECT_MAP.lock().unwrap();
-                        map.insert(src_port, dest_info);
+                    if let Some(ref packet_map) = PACKET_MAP {
+                        let mut map = packet_map.lock().unwrap();
+                        map.insert(src_port, packet_info);
                     }
-                    
-                    // Redirect packet to incoming proxy
+
+                    // Redirect to incoming proxy port on localhost
                     match packet.src_ip() {
                         IpAddr::V4(_) => {
                             let ipv4_addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -928,10 +868,17 @@ async fn process_packet(
                     }
                     packet.set_dst_port(incoming_proxy_port);
                     packet.recalculate_tcp_checksum();
-                    
+
+                    log::info!(
+                        "Redirected incoming to port {}: {} {}",
+                        incoming_proxy_port,
+                        packet.connection_id(),
+                        packet.tcp_flag_str()
+                    );
+
                     let buff = packet.clone().inner();
                     let Ok(mut packet1) = SimplePacket::try_from(buff) else {
-                        let _ = write_direct_log("Error converting to SimplePacket");
+                        log::info!("Error converting to SimplePacket");
                         return Err(anyhow::anyhow!("Failed to convert to SimplePacket"));
                     };
 
@@ -941,7 +888,7 @@ async fn process_packet(
                     let packet2 = match InternetPacket::try_from(buff1) {
                         Ok(p) => p,
                         Err(e) => {
-                            let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                            log::info!("Error parsing packet: {:?}", e);
                             return Err(anyhow::anyhow!("Failed to parse InternetPacket: {:?}", e));
                         }
                     };
@@ -952,52 +899,39 @@ async fn process_packet(
                     };
 
                     if let Err(e) = inject_handle.send(&winpacket) {
-                        let _ = write_direct_log(&format!("Failed to send redirected incoming packet: {:?}", e));
+                        eprintln!("Failed to send packet: {:?}", e);
                     } else {
-                        let _ = write_direct_log("Incoming packet redirected to proxy successfully!");
+                        println!("Packet sent successfully to port {}!", incoming_proxy_port);
                     }
-                } else if packet.src_port() == incoming_proxy_port && incoming_proxy_port != 0 {
-                    // Packet coming FROM the incoming proxy - restore original destination
-                    let _ = write_direct_log(&format!("Restoring packet from incoming proxy port {}", incoming_proxy_port));
-                    
+                } else if packet.src_port() == incoming_proxy_port {
+                    // Restore original addresses for response packets from incoming proxy port
                     let dst_port = packet.dst_port();
-                    let dest_info: DestInfo = {
-                        let map = REDIRECT_MAP.lock().unwrap();
-                        if let Some(dest_info) = map.get(&dst_port) {
-                            dest_info.clone()
+                    let packet_info = if let Some(ref packet_map) = PACKET_MAP {
+                        let map = packet_map.lock().unwrap();
+                        if let Some(packet_info) = map.get(&dst_port) {
+                            packet_info.clone()
                         } else {
-                            let _ = write_direct_log(&format!("Failed to get proxy info for port: {}", dst_port));
-                            return Err(anyhow::anyhow!("Failed to get proxy info for port: {}", dst_port));
+                            return Err(anyhow::anyhow!("Failed to get packet info for port: {}", dst_port));
                         }
+                    } else {
+                        return Err(anyhow::anyhow!("Packet map not initialized."));
                     };
 
-                    // Parse original packet information from DestInfo
-                    // host contains original src_ip, port contains original src_port
-                    // version contains "dst_ip:dst_port"
-                    let original_src_ip: IpAddr = dest_info.host.parse()
-                        .map_err(|_| anyhow::anyhow!("Failed to parse original src_ip: {}", dest_info.host))?;
-                    let _original_src_port = dest_info.port; // This was the original src_port, but we don't need it for restoration
-                    
-                    // Parse dst_ip:dst_port from version field
-                    let version_parts: Vec<&str> = dest_info.version.split(':').collect();
-                    if version_parts.len() != 2 {
-                        return Err(anyhow::anyhow!("Invalid version format: {}", dest_info.version));
-                    }
-                    
-                    let original_dst_ip: IpAddr = version_parts[0].parse()
-                        .map_err(|_| anyhow::anyhow!("Failed to parse original dst_ip: {}", version_parts[0]))?;
-                    let original_dst_port: u16 = version_parts[1].parse()
-                        .map_err(|_| anyhow::anyhow!("Failed to parse original dst_port: {}", version_parts[1]))?;
-
-                    // Restore original packet information
-                    packet.set_dst_ip(original_src_ip);
-                    packet.set_src_ip(original_dst_ip);
-                    packet.set_src_port(original_dst_port);
+                    packet.set_src_ip(packet_info.dst_ip);
+                    packet.set_dst_ip(packet_info.src_ip);
+                    packet.set_src_port(packet_info.dst_port);
                     packet.recalculate_tcp_checksum();
 
+                    log::info!(
+                        "Restored response from port {}: {} {}",
+                        incoming_proxy_port,
+                        packet.connection_id(),
+                        packet.tcp_flag_str()
+                    );
+
                     let buff = packet.clone().inner();
                     let Ok(mut packet1) = SimplePacket::try_from(buff) else {
-                        let _ = write_direct_log("Error converting to SimplePacket");
+                        log::info!("Error converting to SimplePacket");
                         return Err(anyhow::anyhow!("Failed to convert to SimplePacket"));
                     };
 
@@ -1007,7 +941,7 @@ async fn process_packet(
                     let packet2 = match InternetPacket::try_from(buff1) {
                         Ok(p) => p,
                         Err(e) => {
-                            let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                            log::info!("Error parsing packet: {:?}", e);
                             return Err(anyhow::anyhow!("Failed to parse InternetPacket: {:?}", e));
                         }
                     };
@@ -1018,17 +952,17 @@ async fn process_packet(
                     };
 
                     if let Err(e) = inject_handle.send(&winpacket) {
-                        let _ = write_direct_log(&format!("Failed to send restored packet: {:?}", e));
+                        eprintln!("Failed to send packet: {:?}", e);
                     } else {
-                        let _ = write_direct_log("Packet from proxy restored successfully!");
+                        println!("Response packet sent successfully!");
                     }
                 } else {
                     // Forward other packets unchanged
-                    let _ = write_direct_log(&format!(
+                    log::debug!(
                         "Forwarding unchanged: {} {}",
                         packet.connection_id(),
                         packet.tcp_flag_str()
-                    ));
+                    );
                     inject_handle
                         .send(&WinDivertPacket {
                             address,
@@ -1048,48 +982,69 @@ async fn process_packet(
         }
         ConnectionAction::InterceptOutgoing(ProcessInfo { pid: _, process_name: _ }) => {
             
-            let _ = write_direct_log(&format!("Intercepting: {} {} protocol={}", packet.connection_id(), packet.tcp_flag_str(), packet.protocol()));
+            let proxy_port = PROXY_PORT.load(Ordering::SeqCst) as u16;
+            
+            log::info!(
+                "Intercepting: {} {} protocol={}",
+                packet.connection_id(),
+                packet.tcp_flag_str(),
+                packet.protocol()
+            );
 
-            if packet.src_port() != 16789 {
+            if packet.src_port() != proxy_port {
+
                 let src_port = packet.src_port();
-                let dest_info = DestInfo {
-                    host: packet.src_ip().to_string(),
-                    port: packet.src_port(),
-                    version: format!("{}:{}", packet.dst_ip(), packet.dst_port()),
+                let packet_info: PacketInfo = PacketInfo {
+                    src_ip: packet.src_ip(),
+                    dst_ip: packet.dst_ip(),
+                    dst_port: packet.dst_port(),
                 };
-                {
-                    let mut map = REDIRECT_MAP.lock().unwrap();
-                    map.insert(src_port, dest_info);
+                unsafe {
+                    if let Some(ref packet_map) = PACKET_MAP {
+                        let mut map = packet_map.lock().unwrap();
+                        map.insert(src_port, packet_info);
+                    }
                 }
+
 
                 match packet.src_ip() {
                     IpAddr::V4(_) => {
+                        // Handle IPv4 packet
                         let ipv4_addr = Ipv4Addr::new(127, 0, 0, 1);
                         packet.set_dst_ip(IpAddr::V4(ipv4_addr));
                         packet.set_src_ip(IpAddr::V4(ipv4_addr));
                     }
                     IpAddr::V6(_) => {
+                        // Handle IPv6 packet
                         let ipv6_addr = Ipv6Addr::LOCALHOST;
                         packet.set_dst_ip(IpAddr::V6(ipv6_addr));
                         packet.set_src_ip(IpAddr::V6(ipv6_addr));
                     }
                 }
-                packet.set_dst_port(16789);
+                packet.set_dst_port(proxy_port);
                 packet.recalculate_tcp_checksum();
+
+                log::info!(
+                    "Intercepting: {} {} protocol={}",
+                    packet.connection_id(),
+                    packet.tcp_flag_str(),
+                    packet.protocol()
+                );
 
                 let buff = packet.clone().inner();
                 let Ok(mut packet1) = SimplePacket::try_from(buff) else {
-                    let _ = write_direct_log("Error converting to SimplePacket");
+                    log::info!("Error converting to SimplePacket");
                     return Err(anyhow::anyhow!("Failed to convert to SimplePacket"));
                 };
 
                 packet1.fill_ip_checksum();
+
                 let buff1 = packet1.into_inner();
 
                 let packet2 = match InternetPacket::try_from(buff1) {
                     Ok(p) => p,
                     Err(e) => {
-                        let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                        log::info!("Error parsing packet: {:?}", e);
                         return Err(anyhow::anyhow!("Failed to parse InternetPacket: {:?}", e));
                     }
                 };
@@ -1100,58 +1055,53 @@ async fn process_packet(
                 };
 
                 if let Err(e) = inject_handle.send(&winpacket) {
-                    let _ = write_direct_log(&format!("Failed to send packet: {:?}", e));
+                    eprintln!("Failed to send packet: {:?}", e);
                 } else {
-                    let _ = write_direct_log("Packet sent successfully!");
+                    println!("Packet sent successfully!");
                 }
             } else {
                 let src_port = packet.dst_port();
-                let dest_info: DestInfo = {
-                    let map = REDIRECT_MAP.lock().unwrap();
-                    if let Some(dest_info) = map.get(&src_port) {
-                        dest_info.clone()
+                let packet_info: PacketInfo  = unsafe {
+                    if let Some(ref packet_map) = PACKET_MAP {
+                        let map = packet_map.lock().unwrap();
+                        if let Some(packet_info) = map.get(&src_port) {
+                            packet_info.clone()
+                        } else {
+                            return Err(anyhow::anyhow!("Failed to get info : {}", src_port));
+                        }
                     } else {
-                        return Err(anyhow::anyhow!("Failed to get info : {}", src_port));
+                        return Err(anyhow::anyhow!("Packet map not initialized."));
                     }
                 };
 
-                // Parse original packet information from DestInfo
-                // host contains original src_ip, port contains original src_port
-                // version contains "dst_ip:dst_port"
-                let original_src_ip: IpAddr = dest_info.host.parse()
-                    .map_err(|_| anyhow::anyhow!("Failed to parse original src_ip: {}", dest_info.host))?;
-                let _original_src_port = dest_info.port; // This was the original src_port
-                
-                // Parse dst_ip:dst_port from version field
-                let version_parts: Vec<&str> = dest_info.version.split(':').collect();
-                if version_parts.len() != 2 {
-                    return Err(anyhow::anyhow!("Invalid version format: {}", dest_info.version));
-                }
-                
-                let original_dst_ip: IpAddr = version_parts[0].parse()
-                    .map_err(|_| anyhow::anyhow!("Failed to parse original dst_ip: {}", version_parts[0]))?;
-                let original_dst_port: u16 = version_parts[1].parse()
-                    .map_err(|_| anyhow::anyhow!("Failed to parse original dst_port: {}", version_parts[1]))?;
+                packet.set_dst_ip(packet_info.src_ip);
+                packet.set_src_ip(packet_info.dst_ip);
+                packet.set_src_port(packet_info.dst_port);
 
-                // Restore original packet information
-                packet.set_dst_ip(original_src_ip);
-                packet.set_src_ip(original_dst_ip);
-                packet.set_src_port(original_dst_port);
                 packet.recalculate_tcp_checksum();
 
+                log::info!(
+                    "Intercepting: {} {} protocol={}",
+                    packet.connection_id(),
+                    packet.tcp_flag_str(),
+                    packet.protocol()
+                );
+
                 let buff = packet.clone().inner();
+
                 let Ok(mut packet1) = SimplePacket::try_from(buff) else {
-                    let _ = write_direct_log("Error converting to SimplePacket");
+                    log::info!("Error converting to SimplePacket");
                     return Err(anyhow::anyhow!("Failed to convert to SimplePacket"));
                 };
 
                 packet1.fill_ip_checksum();
+
                 let buff1 = packet1.into_inner();
 
                 let packet2 = match InternetPacket::try_from(buff1) {
                     Ok(p) => p,
                     Err(e) => {
-                        let _ = write_direct_log(&format!("Error parsing packet: {:?}", e));
+                        log::info!("Error parsing packet: {:?}", e);
                         return Err(anyhow::anyhow!("Failed to parse InternetPacket: {:?}", e));
                     }
                 };
@@ -1162,9 +1112,9 @@ async fn process_packet(
                 };
 
                 if let Err(e) = inject_handle.send(&winpacket) {
-                    let _ = write_direct_log(&format!("Failed to send packet: {:?}", e));
+                    eprintln!("Failed to send packet: {:?}", e);
                 } else {
-                    let _ = write_direct_log("Packet sent successfully!");
+                    println!("Packet sent successfully!");
                 }
             }
         }

@@ -2,8 +2,10 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_uint};
 use std::sync::atomic::Ordering;
 use std::thread;
+use std::fs::OpenOptions;
+use std::io::Write;
 
-use crate::*; // Import from lib.rs instead of super
+use crate::*; // Import from lib.rs
 
 // =======================
 // FFI Interface Functions
@@ -32,14 +34,33 @@ pub extern "C" fn start_redirector_with_dll_path(
     incoming_proxy: c_uint,
     dll_path: *const c_char,
 ) -> c_uint {
-    let _ = write_direct_log("FFI start_redirector_with_dll_path called");
+    // Initialize file-only logger early so subsequent logs go to the file.
+    // This will remove any existing windows_redirector.log at startup (per init_file_logger behaviour).
+    let logger_ok = init_file_logger().is_ok();
 
     if RUNNING.swap(true, Ordering::SeqCst) {
-        let _ = write_direct_log("Redirector already running, returning failure");
+        if logger_ok {
+            log::error!("Redirector already running, returning failure");
+        } else {
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("windows_redirector.log")
+                .and_then(|mut f| writeln!(f, "Redirector already running, returning failure").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+        }
         return 0; // already running = failure
     }
 
-    let _ = write_direct_log("RUNNING flag set, initializing logger");
+    if !logger_ok {
+        // best-effort fallback write if logger init failed
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("windows_redirector.log")
+            .and_then(|mut f| writeln!(f, "RUNNING flag set, logger init failed").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+    } else {
+        log::info!("RUNNING flag set, logger initialized");
+    }
 
     // Convert dll_path to Option<String>
     let dll_path_str = if dll_path.is_null() {
@@ -48,27 +69,43 @@ pub extern "C" fn start_redirector_with_dll_path(
         unsafe {
             match CStr::from_ptr(dll_path).to_str() {
                 Ok(s) => {
-                    let _ = write_direct_log(&format!("Using custom WinDivert.dll path: {}", s));
+                    if logger_ok {
+                        log::debug!("Using custom WinDivert.dll path: {}", s);
+                    } else {
+                        let _ = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("windows_redirector.log")
+                            .and_then(|mut f| writeln!(f, "Using custom WinDivert.dll path: {}", s).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                    }
                     Some(s.to_string())
                 }
                 Err(e) => {
-                    let _ = write_direct_log(&format!("Invalid dll_path string: {:?}", e));
+                    if logger_ok {
+                        log::error!("Invalid dll_path string: {:?}", e);
+                    } else {
+                        let _ = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("windows_redirector.log")
+                            .and_then(|mut f| writeln!(f, "Invalid dll_path string: {:?}", e).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                    }
                     return 0; // failure due to invalid path
                 }
             }
         }
     };
 
-    // Initialize simple file logger (safe to call multiple times)
-    if init_file_logger().is_err() {
-        // fallback - write a direct message to the file so we always have at least one entry
-        let _ = write_direct_log("Starting Windows redirector (fallback logger)");
-    } else {
+    // Log starting message
+    if logger_ok {
         log::info!("Starting Windows redirector changing...");
-        // let _ = write_direct_log("Logger initialized successfully");
+    } else {
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("windows_redirector.log")
+            .and_then(|mut f| writeln!(f, "Starting Windows redirector (fallback logger)").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
     }
-
-    // let _ = write_direct_log("Storing configuration values");
 
     log::info!(
         "Configuration - client_pid: {}, agent_pid: {}, proxy_port: {}, incoming_proxy: {}",
@@ -84,40 +121,122 @@ pub extern "C" fn start_redirector_with_dll_path(
     PROXY_PORT.store(proxy_port, Ordering::SeqCst);
     INCOMING_PROXY.store(incoming_proxy, Ordering::SeqCst);
 
-    let _ = write_direct_log("Configuration stored, spawning redirector thread");
+    if logger_ok {
+        log::debug!("Configuration stored, spawning redirector thread");
+    } else {
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("windows_redirector.log")
+            .and_then(|mut f| writeln!(f, "Configuration stored, spawning redirector thread").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+    }
 
     thread::spawn(move || {
-        let _ = write_direct_log("Redirector thread started");
-        
+        if logger_ok {
+            log::debug!("Redirector thread started");
+        } else {
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("windows_redirector.log")
+                .and_then(|mut f| writeln!(f, "Redirector thread started").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+        }
+
         // Check if running as administrator first
-        let _ = write_direct_log("Checking administrator privileges...");
-        
+        if logger_ok {
+            log::debug!("Checking administrator privileges...");
+        } else {
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("windows_redirector.log")
+                .and_then(|mut f| writeln!(f, "Checking administrator privileges...").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+        }
+
         match tokio::runtime::Runtime::new() {
             Ok(rt) => {
-                let _ = write_direct_log("Tokio runtime created, calling run_redirector");
+                if logger_ok {
+                    log::debug!("Tokio runtime created, calling run_redirector");
+                } else {
+                    let _ = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("windows_redirector.log")
+                        .and_then(|mut f| writeln!(f, "Tokio runtime created, calling run_redirector").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                }
+
                 let result = rt.block_on(run_redirector_with_dll_path(dll_path_str.as_deref()));
                 if let Err(e) = result {
                     let error_msg = format!("Redirector error: {:?}", e);
-                    log::error!("{}", &error_msg);
-                    let _ = write_direct_log(&error_msg);
-                    
+                    if logger_ok {
+                        log::error!("{}", &error_msg);
+                    } else {
+                        let _ = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("windows_redirector.log")
+                            .and_then(|mut f| writeln!(f, "{}", &error_msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                    }
+
                     // Check if it's a permission error
                     let error_str = format!("{:?}", e);
                     if error_str.contains("Access is denied") || error_str.contains("Operation not permitted") {
-                        let _ = write_direct_log("ERROR: Administrator privileges required! Please run as Administrator.");
+                        if logger_ok {
+                            log::error!("ERROR: Administrator privileges required! Please run as Administrator.");
+                        } else {
+                            let _ = OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open("windows_redirector.log")
+                                .and_then(|mut f| writeln!(f, "ERROR: Administrator privileges required! Please run as Administrator.").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                        }
                     }
                 }
-                let _ = write_direct_log("run_redirector completed");
+
+                if logger_ok {
+                    log::debug!("run_redirector completed");
+                } else {
+                    let _ = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("windows_redirector.log")
+                        .and_then(|mut f| writeln!(f, "run_redirector completed").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                }
             }
             Err(e) => {
                 let error_msg = format!("Failed to create Tokio runtime: {:?}", e);
-                let _ = write_direct_log(&error_msg);
+                if logger_ok {
+                    log::error!("{}", &error_msg);
+                } else {
+                    let _ = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("windows_redirector.log")
+                        .and_then(|mut f| writeln!(f, "{}", &error_msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+                }
             }
         }
-        let _ = write_direct_log("Redirector thread ending");
+
+        if logger_ok {
+            log::debug!("Redirector thread ending");
+        } else {
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("windows_redirector.log")
+                .and_then(|mut f| writeln!(f, "Redirector thread ending").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+        }
     });
 
-    let _ = write_direct_log("Redirector thread spawned successfully, returning success");
+    if logger_ok {
+        log::info!("Redirector thread spawned successfully, returning success");
+    } else {
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("windows_redirector.log")
+            .and_then(|mut f| writeln!(f, "Redirector thread spawned successfully, returning success").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+    }
 
     1 // success
 }
@@ -146,22 +265,32 @@ pub extern "C" fn get_destination(src_port: c_uint) -> WinDest {
         };
     }
 
-    let map = REDIRECT_MAP.lock().unwrap();
-    match map.get(&(src_port as u16)) {
-        Some(dest) => {
-            let host = CString::new(dest.host.clone()).unwrap_or_default();
-            let version = CString::new(dest.version.clone()).unwrap_or_default();
+    unsafe {
+        if let Some(ref packet_map) = PACKET_MAP {
+            let map = packet_map.lock().unwrap();
+            match map.get(&(src_port as u16)) {
+                Some(packet_info) => {
+                    let host = CString::new(packet_info.src_ip.to_string()).unwrap_or_default();
+                    let version = CString::new(format!("{}:{}", packet_info.dst_ip, packet_info.dst_port)).unwrap_or_default();
+                    WinDest {
+                        host: host.into_raw(),
+                        port: 0, // Not directly stored in PacketInfo
+                        version: version.into_raw(),
+                    }
+                }
+                None => WinDest {
+                    host: std::ptr::null_mut(),
+                    port: 0,
+                    version: std::ptr::null_mut(),
+                },
+            }
+        } else {
             WinDest {
-                host: host.into_raw(),
-                port: dest.port as c_uint,
-                version: version.into_raw(),
+                host: std::ptr::null_mut(),
+                port: 0,
+                version: std::ptr::null_mut(),
             }
         }
-        None => WinDest {
-            host: std::ptr::null_mut(),
-            port: 0,
-            version: std::ptr::null_mut(),
-        },
     }
 }
 
@@ -173,11 +302,17 @@ pub extern "C" fn delete_destination(src_port: c_uint) -> c_uint {
         return 0;
     }
 
-    let mut map = REDIRECT_MAP.lock().unwrap();
-    if map.remove(&(src_port as u16)).is_some() {
-        1 // success
-    } else {
-        0 // not found
+    unsafe {
+        if let Some(ref packet_map) = PACKET_MAP {
+            let mut map = packet_map.lock().unwrap();
+            if map.remove(&(src_port as u16)).is_some() {
+                1 // success
+            } else {
+                0 // not found
+            }
+        } else {
+            0 // map not initialized
+        }
     }
 }
 
@@ -195,3 +330,4 @@ pub extern "C" fn free_windest(dest: WinDest) {
         }
     }
 }
+
